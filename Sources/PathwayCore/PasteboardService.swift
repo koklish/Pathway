@@ -21,6 +21,13 @@ public struct PasteboardService {
         self.pasteboard = pasteboard
     }
 
+    /// Буфер, не связанный с системным — чтобы тесты не трогали буфер пользователя.
+    public init(isolatedForTesting: Bool) {
+        self.pasteboard = isolatedForTesting
+            ? NSPasteboard(name: .init("PathwayIsolated-\(UUID().uuidString)"))
+            : .general
+    }
+
     public func write(_ urls: [URL], operation: ClipboardOperation) {
         pasteboard.clearContents()
         pasteboard.writeObjects(urls as [NSURL])
