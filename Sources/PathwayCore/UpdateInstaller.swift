@@ -64,13 +64,17 @@ public struct BundleUpdateInstaller: UpdateInstalling {
         let contents = try FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil
         )
-        guard let app = contents.first(where: { $0.pathExtension == "app" }) else {
-            throw UpdateError.notAnApp
-        }
-        guard let bundle = Bundle(url: app) else { throw UpdateError.notAnApp }
-        guard bundle.bundleIdentifier == Bundle.main.bundleIdentifier else {
+        // Ищем бандл по совпадению идентификатора, а не первый попавшийся .app:
+        // порядок contentsOfDirectory не определён, и при двух бандлах в архиве
+        // выбор оказался бы случайным.
+        let apps = contents.filter { $0.pathExtension == "app" }
+        guard !apps.isEmpty else { throw UpdateError.notAnApp }
+        guard let app = apps.first(where: {
+            Bundle(url: $0)?.bundleIdentifier == Bundle.main.bundleIdentifier
+        }) else {
             throw UpdateError.wrongIdentifier
         }
+        guard let bundle = Bundle(url: app) else { throw UpdateError.notAnApp }
 
         let newVersion = bundle.infoDictionary?["CFBundleShortVersionString"] as? String
         let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
@@ -81,8 +85,10 @@ public struct BundleUpdateInstaller: UpdateInstalling {
             throw UpdateError.notNewer
         }
 
-        // Подпись ad-hoc, проверять её у Apple незачем — но целостность бандла
-        // codesign подтверждает: битая загрузка сюда не пройдёт.
+        // Это защита от битой загрузки, а не от подмены. Подпись ad-hoc, и
+        // проверено: бандл с подложенным файлом, переподписанный ad-hoc заново,
+        // проходит --verify --deep успешно. Подлинность держится только на HTTPS
+        // к api.github.com, а не на codesign — не принимайте эту проверку за неё.
         guard run("/usr/bin/codesign", ["--verify", "--deep", app.path]) else {
             throw UpdateError.signatureInvalid
         }
@@ -97,16 +103,20 @@ public struct BundleUpdateInstaller: UpdateInstalling {
     /// Приложение не может заменить собственный бандл: оно из него выполняется.
     /// Скрипт дожидается завершения процесса и работает уже без нас.
     private func launchHelper(replacing installed: URL, with fresh: URL) throws {
-        let backup = installed.path + ".old"
+        // Пути приходят аргументами, а не подстановкой в текст скрипта. Интерполяция
+        // даже в кавычках оставляет инъекцию: путь с кавычкой и точкой с запятой
+        // закрывает строку и выполняет произвольную команду. В теле скрипта нет ни
+        // одного подставленного значения — только $1 и $2, которые bash никогда не
+        // разбирает как код.
         let script = """
         #!/bin/bash
         # Подменяет бандл Проводника после завершения приложения.
         # Запускается самим приложением и переживает его.
         set -u
 
-        INSTALLED="\(installed.path)"
-        FRESH="\(fresh.path)"
-        BACKUP="\(backup)"
+        INSTALLED="$1"
+        FRESH="$2"
+        BACKUP="$1.old"
 
         # Ждём, пока приложение действительно закроется: замена бандла под живым
         # процессом оставила бы его в нерабочем состоянии.
@@ -115,29 +125,66 @@ public struct BundleUpdateInstaller: UpdateInstalling {
             sleep 0.1
         done
 
-        rm -rf "$BACKUP"
+        # Дождались не всегда: зависший процесс держит бандл, и подменять его
+        # под ним — ровно та поломка, которую цикл выше должен предотвращать.
+        if pgrep -x Pathway > /dev/null; then
+            exit 1
+        fi
+
+        # Прежний .old обязан исчезнуть. Иначе следующий mv положит бандл ВНУТРЬ
+        # уцелевшего каталога — получится Проводник.app/Проводник.app, приложение
+        # мертво, а исходный бандл уже не восстановить.
+        rm -rf "$BACKUP" || exit 1
+
         # Старый бандл переименовываем, а не удаляем: это единственная точка отката,
         # если новая версия не запустится.
         mv "$INSTALLED" "$BACKUP" || exit 1
 
         if ! ditto "$FRESH" "$INSTALLED"; then
-            mv "$BACKUP" "$INSTALLED"
+            # Оборвавшийся ditto оставляет частичный каталог, и mv вложил бы
+            # откат в него. Сносим остаток перед каждым восстановлением.
+            rm -rf "$INSTALLED" || exit 1
+            mv "$BACKUP" "$INSTALLED" || exit 1
             open "$INSTALLED"
             exit 1
         fi
 
-        open "$INSTALLED"
-
-        # Новая версия должна подняться. Если через десять секунд её нет —
-        # считаем обновление неудачным и возвращаем прежнюю.
+        # Запоминаем PID именно нового процесса: pgrep по имени не отличил бы его
+        # от прежней копии, и «приложение живо» могло бы означать вовсе не ту
+        # версию. open возвращается сразу, не дожидаясь запуска, поэтому PID
+        # доискиваем циклом: pgrep -n отдаёт самый новый процесс — только что
+        # порождённый нами. -n у open обязателен, иначе Launch Services при живой
+        # прежней копии активирует её вместо запуска новой.
+        open -n -a "$INSTALLED"
+        NEW_PID=""
         for _ in $(seq 100); do
-            pgrep -x Pathway > /dev/null && exit 0
+            NEW_PID="$(pgrep -n -x Pathway || true)"
+            [ -n "$NEW_PID" ] && break
             sleep 0.1
         done
 
-        rm -rf "$INSTALLED"
-        mv "$BACKUP" "$INSTALLED"
+        # Окно ожидания щедрое: первый запуск подменённого бандла с проверкой
+        # Gatekeeper на медленном или сетевом диске в десять секунд не укладывается,
+        # а откат по таймауту снёс бы исправно стартующее приложение.
+        if [ -n "$NEW_PID" ]; then
+            for _ in $(seq 600); do
+                kill -0 "$NEW_PID" 2> /dev/null || break
+                sleep 0.1
+            done
+            # Процесс прожил всё окно — обновление удалось, откат не нужен.
+            if kill -0 "$NEW_PID" 2> /dev/null; then
+                exit 0
+            fi
+        fi
+
+        # Сюда попадаем, только если новая версия не поднялась вовсе или умерла,
+        # не прожив окна: удалять установленное можно исключительно в этом случае.
+        rm -rf "$INSTALLED" || exit 1
+        mv "$BACKUP" "$INSTALLED" || exit 1
         open "$INSTALLED"
+        # Явный ненулевой код: последней командой стоит open, и её успех иначе
+        # выдал бы откат за удачное обновление.
+        exit 1
         """
 
         let scriptURL = fresh.deletingLastPathComponent().appendingPathComponent("install.sh")
@@ -148,7 +195,7 @@ public struct BundleUpdateInstaller: UpdateInstalling {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [scriptURL.path]
+        process.arguments = [scriptURL.path, installed.path, fresh.path]
         do {
             try process.run()
         } catch {
@@ -163,8 +210,19 @@ public struct BundleUpdateInstaller: UpdateInstalling {
     /// Вызывается при старте: раз мы выполняемся, обновление удалось и запасная
     /// копия больше не нужна. Иначе она осталась бы в /Applications навсегда.
     public static func cleanUpAfterUpdate() {
-        let backup = Bundle.main.bundleURL.path + ".old"
-        guard FileManager.default.fileExists(atPath: backup) else { return }
+        let bundleURL = Bundle.main.bundleURL
+        // Только /Applications: при запуске из папки сборки — штатный отладочный
+        // сценарий — рядом лежит build/Проводник.app.old, и безусловная уборка
+        // удаляла бы чужой каталог, к обновлению отношения не имеющий.
+        guard bundleURL.deletingLastPathComponent().path == "/Applications" else { return }
+
+        let backup = bundleURL.path + ".old"
+        // Проверяем, что это каталог: одноимённый файл бандлом быть не может,
+        // а значит и остатком отката — удалять его мы не подписывались.
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: backup, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else { return }
         try? FileManager.default.removeItem(atPath: backup)
     }
 
