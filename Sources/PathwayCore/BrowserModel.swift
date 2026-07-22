@@ -9,6 +9,14 @@ public struct Breadcrumb: Identifiable, Hashable, Sendable {
     public let name: String
 }
 
+/// Распаковка наткнулась на зашифрованный архив — интерфейс должен спросить пароль.
+public struct PasswordRequest: Hashable, Sendable {
+    public let archive: URL
+    public let destination: URL
+    /// true — пароль уже вводили, и он не подошёл.
+    public let wasWrong: Bool
+}
+
 /// Связывает навигацию, чтение папки и файловые операции для одной панели.
 @Observable
 @MainActor
@@ -18,12 +26,18 @@ public final class BrowserModel {
     public var errorMessage: String?
     public var showHiddenFiles = false
     public var operationProgress: Double?
+    /// Название идущей операции для статус-бара («Архивация…», «Распаковка…»).
+    public private(set) var operationTitle: String?
+    public private(set) var passwordRequest: PasswordRequest?
 
     /// true, пока идёт чтение папки — для индикатора в интерфейсе.
     public private(set) var isLoading = false
 
     private let loader = DirectoryLoader()
     private let operations = FileOperations()
+    private let archiver = ArchiveService()
+    /// Текущая операция с архивом — одна за раз, с возможностью отмены.
+    private var operationTask: Task<Void, Never>?
     private let pasteboard: PasteboardService
     private let cache = DirectoryCache()
     private var sortKey = "name"
@@ -135,6 +149,8 @@ public final class BrowserModel {
     public func open(_ item: FileItem) {
         if item.isDirectory {
             navigate(to: item.url)
+        } else if ArchiveService.isArchive(item.url) {
+            extract(item)
         } else {
             NSWorkspace.shared.open(item.url)
         }
@@ -269,6 +285,85 @@ public final class BrowserModel {
         }
     }
 
+    // MARK: - Архивы
+
+    public func compress(items: [FileItem], format: ArchiveFormat, password: String?, name: String) {
+        let urls = items.map(\.url)
+        let directory = pane.path
+        startOperation(title: "Архивация…") { [archiver] progress in
+            _ = try await archiver.create(
+                items: urls, format: format, password: password,
+                archiveName: name, in: directory, progress: progress)
+        }
+    }
+
+    /// Распаковывает архив; `directory == nil` — рядом с архивом.
+    public func extract(_ item: FileItem, to directory: URL? = nil) {
+        extractArchive(item.url, to: directory ?? item.url.deletingLastPathComponent(), password: nil)
+    }
+
+    /// Повтор распаковки с паролем, введённым в диалоге.
+    public func submitPassword(_ password: String) {
+        guard let request = passwordRequest else { return }
+        passwordRequest = nil
+        extractArchive(request.archive, to: request.destination, password: password)
+    }
+
+    public func cancelPasswordRequest() {
+        passwordRequest = nil
+    }
+
+    public func cancelOperation() {
+        operationTask?.cancel()
+    }
+
+    /// Ждёт завершения текущей операции с архивом — для тестов.
+    public func waitForOperation() async {
+        await operationTask?.value
+    }
+
+    private func extractArchive(_ archive: URL, to destination: URL, password: String?) {
+        startOperation(title: "Распаковка…") { [archiver] progress in
+            do {
+                _ = try await archiver.extract(
+                    archive: archive, to: destination, password: password, progress: progress)
+            } catch ArchiveError.passwordRequired {
+                await MainActor.run {
+                    self.passwordRequest = PasswordRequest(archive: archive, destination: destination, wasWrong: false)
+                }
+            } catch ArchiveError.wrongPassword {
+                await MainActor.run {
+                    self.passwordRequest = PasswordRequest(archive: archive, destination: destination, wasWrong: true)
+                }
+            }
+        }
+    }
+
+    /// Запускает операцию с архивом в фоне: прогресс в статус-бар, ошибки в алерт,
+    /// по завершении список перечитывается.
+    private func startOperation(
+        title: String,
+        _ body: @escaping (@escaping @Sendable (Double) -> Void) async throws -> Void
+    ) {
+        operationTitle = title
+        operationProgress = 0
+        operationTask = Task {
+            do {
+                try await body { value in
+                    Task { @MainActor in self.operationProgress = value }
+                }
+            } catch is CancellationError {
+                // Отмена — не ошибка.
+            } catch {
+                errorMessage = Self.describe(error, at: pane.path)
+            }
+            operationTitle = nil
+            operationProgress = nil
+            cache.invalidate(pane.path)
+            reload()
+        }
+    }
+
     /// Выполняет операцию, показывает понятную ошибку и обновляет список.
     private func run(_ body: () throws -> Void) {
         do {
@@ -284,6 +379,16 @@ public final class BrowserModel {
     // MARK: - Ошибки
 
     private static func describe(_ error: any Error, at path: URL) -> String {
+        if let archiveError = error as? ArchiveError {
+            switch archiveError {
+            case .passwordRequired, .wrongPassword:
+                return "Архив зашифрован — нужен пароль."
+            case .encryptedUnsupported:
+                return "Архив зашифрован. Системный распаковщик не поддерживает зашифрованные 7z и RAR."
+            case .toolFailed(let message):
+                return "Не удалось обработать архив. \(message)"
+            }
+        }
         if let operationError = error as? FileOperationError {
             switch operationError {
             case .invalidName:
