@@ -19,11 +19,18 @@ public final class BrowserModel {
     public var showHiddenFiles = false
     public var operationProgress: Double?
 
+    /// true, пока идёт чтение папки — для индикатора в интерфейсе.
+    public private(set) var isLoading = false
+
     private let loader = DirectoryLoader()
     private let operations = FileOperations()
     private let pasteboard: PasteboardService
+    private let cache = DirectoryCache()
     private var sortKey = "name"
     private var sortAscending = true
+    /// Текущая загрузка: при быстром переключении папок предыдущая отменяется,
+    /// иначе медленный сетевой ответ перезапишет уже открытую папку.
+    private var loadTask: Task<Void, Never>?
 
     public init(path: URL, pasteboard: PasteboardService = PasteboardService()) {
         self.pane = PaneState(path: path)
@@ -31,13 +38,20 @@ public final class BrowserModel {
     }
 
     public var breadcrumbs: [Breadcrumb] {
-        var crumbs = [Breadcrumb(url: URL(fileURLWithPath: "/"), name: "Macintosh HD")]
+        var crumbs = [Breadcrumb(url: URL(fileURLWithPath: "/"), name: "Этот Мас")]
         var accumulated = ""
         for component in pane.path.pathComponents.dropFirst() {
             accumulated += "/" + component
-            crumbs.append(Breadcrumb(url: URL(fileURLWithPath: accumulated), name: component))
+            let url = URL(fileURLWithPath: accumulated)
+            crumbs.append(Breadcrumb(url: url, name: Self.displayName(for: url, component: component)))
         }
         return crumbs
+    }
+
+    /// Имя сегмента так, как его показывает Finder: локализованное, если система его переводит.
+    private static func displayName(for url: URL, component: String) -> String {
+        let localized = FileManager.default.displayName(atPath: url.path)
+        return localized.isEmpty ? component : localized
     }
 
     public var statusText: String {
@@ -51,18 +65,71 @@ public final class BrowserModel {
 
     // MARK: - Загрузка и навигация
 
+    /// Синхронная загрузка — для тестов и файловых операций, где нужен готовый результат.
     public func reload() {
         do {
-            items = sorted(try loader.load(directory: pane.path, showHidden: showHiddenFiles))
+            let loaded = sorted(try loader.load(directory: pane.path, showHidden: showHiddenFiles))
+            cache.store(loaded, for: pane.path, showHidden: showHiddenFiles)
+            items = loaded
         } catch {
             items = []
             errorMessage = Self.describe(error, at: pane.path)
         }
     }
 
+    /// Загрузка для интерфейса: не блокирует главный поток.
+    ///
+    /// Порядок такой, чтобы окно оставалось живым на медленных дисках:
+    /// сначала кэш (мгновенно), затем имена из фонового потока, затем метаданные.
+    public func reloadAsync() {
+        let directory = pane.path
+        let showHidden = showHiddenFiles
+
+        // Уже открытую папку показываем сразу, не дожидаясь диска.
+        if let cached = cache.items(for: directory, showHidden: showHidden) {
+            items = sorted(cached)
+        }
+        let hadCache = !items.isEmpty && cache.items(for: directory, showHidden: showHidden) != nil
+
+        loadTask?.cancel()
+        loadTask = Task { [loader] in
+            if !hadCache { isLoading = true }
+            defer { isLoading = false }
+
+            do {
+                // Обход каталога — самая дорогая часть, уводим её с главного потока.
+                let names = try await Task.detached(priority: .userInitiated) {
+                    try loader.loadNames(directory: directory, showHidden: showHidden)
+                }.value
+
+                guard !Task.isCancelled, pane.path == directory else { return }
+                items = sorted(names)
+
+                // Метаданные добираем следом: список уже виден и кликабелен.
+                let detailed = await Task.detached(priority: .utility) {
+                    loader.loadMetadata(for: names)
+                }.value
+
+                guard !Task.isCancelled, pane.path == directory else { return }
+                cache.store(detailed, for: directory, showHidden: showHidden)
+                items = sorted(detailed)
+            } catch {
+                guard !Task.isCancelled, pane.path == directory else { return }
+                items = []
+                errorMessage = Self.describe(error, at: directory)
+            }
+        }
+    }
+
     public func navigate(to url: URL) {
         pane.navigate(to: url)
-        reload()
+        reloadAsync()
+    }
+
+    /// Ждёт завершения текущей фоновой загрузки. Нужно тестам и коду,
+    /// которому важен готовый список сразу после перехода.
+    public func waitForLoad() async {
+        await loadTask?.value
     }
 
     public func open(_ item: FileItem) {
@@ -76,8 +143,31 @@ public final class BrowserModel {
     /// Подпапки для дерева в сайдбаре. Недоступные папки — просто пустой список:
     /// раскрытие узла не должно показывать алерт.
     public func subdirectories(of url: URL) -> [FileItem] {
-        let contents = (try? loader.load(directory: url, showHidden: showHiddenFiles)) ?? []
+        let contents = (try? loader.loadNames(directory: url, showHidden: showHiddenFiles)) ?? []
         return contents.filter(\.isDirectory)
+    }
+
+    /// Подпапки для дерева, прочитанные вне главного потока.
+    ///
+    /// Раскрытие узла на сетевом диске стоит сотни миллисекунд — синхронное чтение
+    /// подвесило бы весь сайдбар.
+    public func subdirectoriesAsync(of url: URL) async -> [FileItem] {
+        let showHidden = showHiddenFiles
+        return await Task.detached(priority: .userInitiated) { [loader] in
+            let contents = (try? loader.loadNames(directory: url, showHidden: showHidden)) ?? []
+            let directories = contents.filter(\.isDirectory)
+            // В дереве сетевые тома не показываем: ими управляют из секции «Сеть»,
+            // а здесь они были бы вторым, неуправляемым вхождением того же диска.
+            // В списке файлов /Volumes при этом остаётся полным.
+            return directories.filter { !Self.isNetworkVolume($0.url) }
+        }.value
+    }
+
+    /// Точка монтирования сетевого тома: /Volumes/… на неместной файловой системе.
+    /// nonisolated — проверка чистая и вызывается из фонового чтения каталога.
+    private nonisolated static func isNetworkVolume(_ url: URL) -> Bool {
+        guard url.deletingLastPathComponent().path == "/Volumes" else { return false }
+        return (try? url.resourceValues(forKeys: [.volumeIsLocalKey]))?.volumeIsLocal == false
     }
 
     // MARK: - Сортировка и отображение
@@ -160,10 +250,13 @@ public final class BrowserModel {
     }
 
     public func copy(_ urls: [URL], to destination: URL) {
+        cache.invalidate(destination)
         run { _ = try operations.copy(urls, to: destination) }
     }
 
     public func move(_ urls: [URL], to destination: URL) {
+        cache.invalidate(destination)
+        urls.forEach { cache.invalidate($0.deletingLastPathComponent()) }
         run { _ = try operations.move(urls, to: destination) }
     }
 
@@ -183,6 +276,8 @@ public final class BrowserModel {
         } catch {
             errorMessage = Self.describe(error, at: pane.path)
         }
+        // Содержимое папки изменилось — кэш устарел, читаем заново.
+        cache.invalidate(pane.path)
         reload()
     }
 

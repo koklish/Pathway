@@ -11,6 +11,16 @@ func withTempDir(_ body: (URL) throws -> Void) throws {
     try body(dir)
 }
 
+/// То же, что withTempDir, но для тестов с фоновой загрузкой.
+@MainActor
+func withTempDirAsync(_ body: @MainActor (URL) async throws -> Void) async throws {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("PathwayTests-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try await body(dir)
+}
+
 @Suite("DirectoryLoader")
 struct DirectoryLoaderTests {
 

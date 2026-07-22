@@ -3,18 +3,8 @@ import Testing
 @testable import PathwayCore
 
 @MainActor
-@Suite("AppState — избранное и настройки")
+@Suite("AppState — настройки")
 struct AppStateTests {
-
-    @Test("по умолчанию содержит стандартные папки пользователя")
-    func hasDefaultFavorites() {
-        let state = AppState()
-
-        let names = state.favorites.map(\.name)
-        #expect(names.contains("Рабочий стол"))
-        #expect(names.contains("Документы"))
-        #expect(names.contains("Загрузки"))
-    }
 
     @Test("скрытые файлы по умолчанию не показываются")
     func hidesHiddenFilesByDefault() {
@@ -30,25 +20,13 @@ struct AppStateTests {
         #expect(state.showHiddenFiles)
     }
 
-    @Test("добавляет папку в избранное и не создаёт дубликатов")
-    func addsFavoriteWithoutDuplicates() {
-        let state = AppState()
-        let folder = URL(fileURLWithPath: "/Users/alex/Projects")
+    @Test("избранное доступно через общее состояние")
+    func exposesFavorites() {
+        let suite = "appstate.tests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let state = AppState(favorites: FavoritesStore(defaults: defaults))
 
-        state.addFavorite(folder)
-        state.addFavorite(folder)
-
-        #expect(state.favorites.filter { $0.url == folder }.count == 1)
-    }
-
-    @Test("удаляет папку из избранного")
-    func removesFavorite() {
-        let state = AppState()
-        let folder = URL(fileURLWithPath: "/Users/alex/Projects")
-        state.addFavorite(folder)
-
-        state.removeFavorite(folder)
-
-        #expect(!state.favorites.contains { $0.url == folder })
+        #expect(!state.favorites.items.isEmpty)
     }
 }

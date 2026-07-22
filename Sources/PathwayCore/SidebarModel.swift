@@ -64,6 +64,11 @@ public final class SidebarModel {
         sections = Self.buildSections()
     }
 
+    /// Пункты секции по её названию.
+    public func items(in section: String) -> [SidebarItem] {
+        sections.first { $0.title == section }?.items ?? []
+    }
+
     // MARK: - Раскрытие дерева
 
     public func isExpanded(_ url: URL) -> Bool {
@@ -90,31 +95,13 @@ public final class SidebarModel {
 
     // MARK: - Построение секций
 
+    /// Секции «Избранное» здесь нет: она реактивна и собирается во вью из FavoritesStore.
     private static func buildSections() -> [SidebarSection] {
         [
-            SidebarSection(title: "ИЗБРАННОЕ", items: favorites()),
             SidebarSection(title: "МЕСТА", items: places()),
-            SidebarSection(title: "СЕТЬ", items: network()),
+            // Секция «Сеть» строится из закладок в SidebarView — здесь её нет.
             SidebarSection(title: "МЕТКИ", items: tags()),
         ]
-    }
-
-    private static func favorites() -> [SidebarItem] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let entries = [
-            ("Desktop", "Рабочий стол"),
-            ("Documents", "Документы"),
-            ("Downloads", "Загрузки"),
-            ("Pictures", "Изображения"),
-        ]
-        return entries.map { folder, label in
-            SidebarItem(
-                url: home.appendingPathComponent(folder),
-                name: label,
-                systemImage: "pin",
-                kind: .favorite
-            )
-        }
     }
 
     private static func places() -> [SidebarItem] {
@@ -132,25 +119,23 @@ public final class SidebarModel {
         return items
     }
 
-    /// Подключённые внешние диски из /Volumes, кроме загрузочного тома.
+    /// Локальные диски из /Volumes, кроме загрузочного тома.
+    ///
+    /// Сетевые тома сюда не попадают: они живут в секции «Сеть», где у них
+    /// есть состояние подключения и настройки. Показывать их в обоих местах —
+    /// значит дважды называть одно и то же разными сущностями.
     private static func externalVolumes() -> [SidebarItem] {
-        let keys: [URLResourceKey] = [.volumeIsRemovableKey, .volumeIsInternalKey, .volumeNameKey]
+        let keys: [URLResourceKey] = [.volumeIsLocalKey, .volumeNameKey]
         let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
         return volumes.compactMap { url in
             guard url.path != "/" else { return nil }
             let values = try? url.resourceValues(forKeys: Set(keys))
+            // Неизвестный тип тома считаем локальным: пропустить свой диск хуже,
+            // чем показать сетевой дважды.
+            guard values?.volumeIsLocal ?? true else { return nil }
             let name = values?.volumeName ?? url.lastPathComponent
             return SidebarItem(url: url, name: name, systemImage: "externaldrive", kind: .place)
         }
-    }
-
-    private static func network() -> [SidebarItem] {
-        [SidebarItem(
-            url: URL(fileURLWithPath: "/Network"),
-            name: "Подключиться к серверу…",
-            systemImage: "plus",
-            kind: .network
-        )]
     }
 
     private static func tags() -> [SidebarItem] {

@@ -6,30 +6,20 @@ import Testing
 @Suite("SidebarModel — секции сайдбара")
 struct SidebarModelTests {
 
-    @Test("содержит четыре секции в порядке макета")
-    func hasFourSectionsInOrder() {
+    // Здесь только статичные секции. «Сеть» собирает SidebarView из ServerBookmarks,
+    // «Избранное» — из FavoritesStore: обе меняются во время работы.
+    @Test("содержит статичные секции в порядке макета")
+    func hasStaticSectionsInOrder() {
         let model = SidebarModel()
 
-        #expect(model.sections.map(\.title) == ["ИЗБРАННОЕ", "МЕСТА", "СЕТЬ", "МЕТКИ"])
-    }
-
-    @Test("избранное содержит закреплённые папки пользователя")
-    func favoritesContainPinnedFolders() {
-        let model = SidebarModel()
-
-        let favorites = model.sections[0].items.map(\.name)
-
-        #expect(favorites.contains("Рабочий стол"))
-        #expect(favorites.contains("Документы"))
-        #expect(favorites.contains("Загрузки"))
-        #expect(favorites.contains("Изображения"))
+        #expect(model.sections.map(\.title) == ["МЕСТА", "МЕТКИ"])
     }
 
     @Test("места начинаются с «Этот Mac»")
     func placesStartWithThisMac() {
         let model = SidebarModel()
 
-        let first = model.sections[1].items.first
+        let first = model.items(in: "МЕСТА").first
 
         #expect(first?.name == "Этот Mac")
         #expect(first?.url.path == "/")
@@ -42,27 +32,57 @@ struct SidebarModelTests {
             .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs")
         let hasICloudOnDisk = FileManager.default.fileExists(atPath: icloud.path)
 
-        let names = model.sections[1].items.map(\.name)
+        let names = model.items(in: "МЕСТА").map(\.name)
 
         #expect(names.contains("iCloud Drive") == hasICloudOnDisk)
+    }
+
+    @Test("места не показывают сетевые тома — им место в секции «Сеть»")
+    func placesExcludeNetworkVolumes() {
+        let model = SidebarModel()
+        let keys: [URLResourceKey] = [.volumeIsLocalKey]
+        let mounted = FileManager.default.mountedVolumeURLs(
+            includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]
+        ) ?? []
+        let networkVolumes = mounted.filter { url in
+            (try? url.resourceValues(forKeys: Set(keys)))?.volumeIsLocal == false
+        }
+
+        let placePaths = Set(model.items(in: "МЕСТА").map(\.url.path))
+
+        // На машине без сетевых томов проверять нечего — тест остаётся честным.
+        for volume in networkVolumes {
+            #expect(!placePaths.contains(volume.path), "сетевой том \(volume.path) не должен быть в «Местах»")
+        }
+    }
+
+    @Test("места показывают локальные тома")
+    func placesIncludeLocalVolumes() {
+        let model = SidebarModel()
+        let keys: [URLResourceKey] = [.volumeIsLocalKey]
+        let mounted = FileManager.default.mountedVolumeURLs(
+            includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]
+        ) ?? []
+        let localVolumes = mounted.filter { url in
+            url.path != "/" && (try? url.resourceValues(forKeys: Set(keys)))?.volumeIsLocal == true
+        }
+
+        let placePaths = Set(model.items(in: "МЕСТА").map(\.url.path))
+
+        for volume in localVolumes {
+            #expect(placePaths.contains(volume.path), "локальный том \(volume.path) должен быть в «Местах»")
+        }
     }
 
     @Test("метки содержат стандартные цвета macOS")
     func tagsContainSystemColors() {
         let model = SidebarModel()
 
-        let tags = model.sections[3].items.map(\.name)
+        let tags = model.items(in: "МЕТКИ").map(\.name)
 
         #expect(tags.contains("Красный"))
         #expect(tags.contains("Синий"))
         #expect(tags.count == 7)
-    }
-
-    @Test("сеть содержит пункт подключения к серверу")
-    func networkHasConnectAction() {
-        let model = SidebarModel()
-
-        #expect(model.sections[2].items.map(\.name) == ["Подключиться к серверу…"])
     }
 }
 

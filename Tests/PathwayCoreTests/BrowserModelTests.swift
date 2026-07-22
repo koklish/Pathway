@@ -19,8 +19,8 @@ struct BrowserModelTests {
     }
 
     @Test("переход в папку перезагружает список")
-    func navigationReloadsItems() throws {
-        try withTempDir { dir in
+    func navigationReloadsItems() async throws {
+        try await withTempDirAsync { dir in
             let sub = dir.appendingPathComponent("sub")
             try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: false)
             try Data("x".utf8).write(to: sub.appendingPathComponent("inner.txt"))
@@ -28,6 +28,7 @@ struct BrowserModelTests {
             model.reload()
 
             model.navigate(to: sub)
+            await model.waitForLoad()
 
             #expect(model.items.map(\.name) == ["inner.txt"])
         }
@@ -227,16 +228,18 @@ struct BrowserModelTests {
 
         let crumbs = model.breadcrumbs
 
-        #expect(crumbs.map(\.name) == ["Macintosh HD", "Users", "alex", "Documents"])
-        #expect(crumbs.first?.url.path == "/")
-        #expect(crumbs.last?.url.path == "/Users/alex/Documents")
+        // Имена сегментов берутся у системы и локализуются, поэтому проверяем URL —
+        // именно они определяют, куда ведёт клик по крошке.
+        #expect(crumbs.map(\.url.path) == ["/", "/Users", "/Users/alex", "/Users/alex/Documents"])
+        #expect(crumbs.first?.name == "Этот Мас")
+        #expect(crumbs.allSatisfy { !$0.name.isEmpty })
     }
 
     @Test("в корне крошки состоят из одного элемента")
     func breadcrumbsAtRoot() {
         let model = BrowserModel(path: URL(fileURLWithPath: "/"))
 
-        #expect(model.breadcrumbs.map(\.name) == ["Macintosh HD"])
+        #expect(model.breadcrumbs.map(\.name) == ["Этот Мас"])
     }
 
     @Test("статус показывает количество папок и файлов")

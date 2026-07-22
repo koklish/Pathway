@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<style>
+  /* Фон окна DMG. Размер соответствует окну, которое задаёт make-dmg.sh:
+     640 × 388 — это 420 из макета минус полоса заголовка. */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 640px; height: 388px; }
+  body {
+    position: relative;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
+    background: radial-gradient(circle at 50% 40%, #eef2f8, #d9dfe8);
+  }
+  /* Стрелка между иконками. Сами иконки рисует Finder поверх фона,
+     поэтому здесь под них оставлено пустое место.
+     Иконки Finder центрируются по Y=180, стрелка высотой 28 — значит верх на 166. */
+  .arrow { position: absolute; left: 50%; top: 166px; transform: translateX(-50%); }
+</style>
+</head>
+<body>
+  <div class="arrow">
+    <svg width="52" height="28" viewBox="0 0 52 28">
+      <path d="M2 14 H44 M32 3 L46 14 L32 25" fill="none" stroke="#9aa0aa"
+            stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </div>
+</body>
+</html>
