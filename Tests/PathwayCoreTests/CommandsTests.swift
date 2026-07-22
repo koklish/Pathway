@@ -177,46 +177,33 @@ struct CommandsTests {
         }
     }
 
-    @Test("выбор буферного пункта мышью при вводе текста файлов не трогает")
-    func pasteboardRunIsInertWhileEditingText() throws {
-        try withTempDir { dir in
-            try Data("x".utf8).write(to: dir.appendingPathComponent("a.txt"))
-            try Data("x".utf8).write(to: dir.appendingPathComponent("b.txt"))
-            let state = makeState(path: dir)
-            state.browser.reload()
-            state.browser.pane.selection = []
-
-            state.isEditingText = true
-            // Проверяем на «Выбрать всё»: его эффект виден прямо в модели, а
-            // copy/cut ушли бы в системный буфер, где и без нас что-то лежит.
-            CommandRegistry[.selectAll].run(state)
-
-            // Пункт живой ради шортката, но клик по нему мышью при открытом
-            // диалоге не должен доставать до списка файлов: responder chain
-            // защищает только клавиши, а мышь идёт прямо в run.
-            #expect(state.browser.pane.selection.isEmpty)
+    @Test("буферные команды не имеют своего шортката — он системный")
+    func pasteboardCommandsHaveNoOwnShortcut() {
+        // ⌘C/⌘X/⌘V/⌘A принадлежат стандартным пунктам меню «Правка» с
+        // селекторами copy:/paste:/selectAll: и target = nil. Их AppKit
+        // доставляет по responder chain: фокус в поле — текстовая операция,
+        // фокус в списке — файловая. Свой пункт с тем же шорткатом
+        // перехватывал бы клавишу и до NSTextField её не пускал.
+        for id in [CommandID.copy, .cut, .paste, .selectAll] {
+            #expect(CommandRegistry[id].shortcut == nil, "\(id.rawValue) не должна дублировать системный шорткат")
         }
     }
 
-    @Test("буферные команды при вводе текста остаются живыми — их берёт поле")
-    func pasteboardCommandsStayEnabledWhileEditingText() throws {
+    @Test("буферные команды остаются в реестре для контекстного меню")
+    func pasteboardCommandsStayInRegistry() throws {
         try withTempDir { dir in
             let file = dir.appendingPathComponent("file.txt")
             try Data("x".utf8).write(to: file)
             let state = makeState(path: dir)
             state.browser.reload()
             state.browser.pane.selection = [file]
-            state.browser.copy()
 
-            state.isEditingText = true
-
-            // Погашенный пункт меню перехватывает шорткат и никуда его не
-            // отдаёт: ⌘C переставал доходить до NSTextField, и в полях
-            // диалога копирование не работало вовсе. Доставку по responder
-            // chain обеспечивает AppKit — пункт для этого должен быть живым.
-            for id in [CommandID.copy, .cut, .paste, .selectAll] {
-                #expect(CommandRegistry[id].isEnabled(state), "\(id.rawValue) нужна текстовому полю")
+            // Заголовок и иконка нужны контекстному меню списка, которое
+            // работает от clickedRow и живёт своей жизнью.
+            for id in [CommandID.copy, .cut, .paste] {
+                #expect(!CommandRegistry[id].title.isEmpty)
             }
+            #expect(CommandRegistry[.copy].isEnabled(state))
         }
     }
 

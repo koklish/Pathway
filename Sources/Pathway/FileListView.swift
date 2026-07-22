@@ -3,6 +3,46 @@ import PathwayCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Таблица, принимающая стандартные буферные команды.
+///
+/// Пункты «Копировать»/«Вставить»/«Выбрать всё» в меню «Правка» системные:
+/// у них target = nil, и AppKit ищет обработчик по responder chain. Пока
+/// фокус в списке, обработчик — эта таблица; как только он уходит в
+/// текстовое поле, те же клавиши достаются полю. Один ⌘C работает в обоих
+/// местах, как в Finder.
+///
+/// Методы живут в NSTableView, а не в координаторе: делегата в responder
+/// chain нет, и до него сообщение не дошло бы.
+final class FileTableView: NSTableView {
+    /// Замыкания вместо ссылки на модель: PathwayCore не знает про AppKit,
+    /// а таблица не должна знать про BrowserModel.
+    var onCopy: (() -> Void)?
+    var onCut: (() -> Void)?
+    var onPaste: (() -> Void)?
+    var onSelectAll: (() -> Void)?
+    var canPaste: (() -> Bool)?
+
+    @objc func copy(_ sender: Any?) { onCopy?() }
+    @objc func cut(_ sender: Any?) { onCut?() }
+    @objc func paste(_ sender: Any?) { onPaste?() }
+    override func selectAll(_ sender: Any?) { onSelectAll?() }
+
+    /// Гасит пункты меню, когда действие невозможно: без этого «Вставить»
+    /// остаётся активным при пустом буфере, а «Копировать» — без выделения.
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        switch item.action {
+        case #selector(copy(_:)), #selector(cut(_:)):
+            return !selectedRowIndexes.isEmpty
+        case #selector(paste(_:)):
+            return canPaste?() ?? false
+        case #selector(selectAll(_:)):
+            return numberOfRows > 0
+        default:
+            return super.validateUserInterfaceItem(item)
+        }
+    }
+}
+
 /// Список файлов. Обёртка над NSTableView: держит тысячи строк, даёт нативные
 /// сортировку по заголовкам, инлайн-переименование, контекстное меню и drag & drop.
 struct FileListView: NSViewRepresentable {
@@ -21,7 +61,7 @@ struct FileListView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let table = NSTableView()
+        let table = FileTableView()
         table.style = .inset
         table.usesAlternatingRowBackgroundColors = true
         table.allowsMultipleSelection = true
@@ -37,6 +77,14 @@ struct FileListView: NSViewRepresentable {
         table.menu = menu
         table.registerForDraggedTypes([.fileURL])
         table.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
+
+        // Буферные операции идут в ту же модель, что и контекстное меню, но
+        // приходят сюда от системных пунктов «Правки» через responder chain.
+        table.onCopy = { [model] in model.copy() }
+        table.onCut = { [model] in model.cut() }
+        table.onPaste = { [model] in model.paste() }
+        table.onSelectAll = { [model] in model.selectAll() }
+        table.canPaste = { [model] in model.canPaste && !model.isReadOnlyVolume }
 
         for column in Column.allCases {
             let tableColumn = NSTableColumn(identifier: column.identifier)
@@ -520,15 +568,33 @@ struct FileListView: NSViewRepresentable {
             // контекстного меню свой (clickedRow), а вот запрет на запись
             // общий, и брать его надо из реестра.
             let writable = !model.isReadOnlyVolume || !CommandRegistry.writesToDisk.contains(id)
+            // У буферных команд своего шортката в реестре нет — он системный,
+            // и показать его надо всё равно: пункт без подписи выглядит так,
+            // будто клавиши для него не существует.
+            let shortcut = command.shortcut ?? Self.systemShortcut(for: id)
             let item = NSMenuItem(
                 title: title ?? command.title,
                 action: writable ? action : nil,
-                keyEquivalent: command.shortcut?.appKitKey ?? ""
+                keyEquivalent: shortcut?.appKitKey ?? ""
             )
-            item.keyEquivalentModifierMask = command.shortcut?.appKitModifiers ?? []
+            item.keyEquivalentModifierMask = shortcut?.appKitModifiers ?? []
             item.target = self
             item.image = icon ?? command.menuImage
             menu.addItem(item)
+        }
+
+        /// Клавиши буферных команд принадлежат меню «Правка», а не реестру:
+        /// там они лежат без шортката, чтобы не перехватывать его у
+        /// текстовых полей. Для подписи в контекстном меню соответствие
+        /// нужно восстановить.
+        private static func systemShortcut(for id: CommandID) -> Shortcut? {
+            switch id {
+            case .copy: Shortcut(.character("c"), .command)
+            case .cut: Shortcut(.character("x"), .command)
+            case .paste: Shortcut(.character("v"), .command)
+            case .selectAll: Shortcut(.character("a"), .command)
+            default: nil
+            }
         }
 
         private var clickedItem: FileItem? {

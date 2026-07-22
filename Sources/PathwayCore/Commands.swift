@@ -154,46 +154,47 @@ public enum CommandRegistry {
 
         // MARK: Правка
 
-        // Буферные команды доступны и во время ввода текста: погашенный пункт
-        // меню перехватывает шорткат и никуда его не отдаёт, так что ⌘C
-        // переставал доходить до NSTextField и в полях диалогов не работал
-        // вовсе. Живой пункт AppKit доставляет по responder chain — фокус в
-        // поле берёт текстовую операцию, фокус в списке файловую.
+        // Буферные команды намеренно без шортката: ⌘C/⌘X/⌘V/⌘A принадлежат
+        // стандартным пунктам меню «Правка» с селекторами copy:/paste:/
+        // selectAll: и target = nil. AppKit доставляет их по responder chain,
+        // поэтому одна клавиша работает и в тексте, и в списке файлов — как в
+        // Finder. Свой пункт с тем же шорткатом перехватывал бы клавишу и до
+        // NSTextField её не пускал.
         //
-        // Защита переехала в run: responder chain стережёт только клавиши, а
-        // выбор пункта мышью при открытом диалоге пришёл бы сюда напрямую.
+        // В реестре они остаются ради контекстного меню списка: заголовок,
+        // иконка и доступность нужны и ему.
 
         AppCommand(
             id: .copy,
             title: "Копировать",
-            shortcut: Shortcut(.character("c"), .command),
+            shortcut: nil,
             icon: "document.on.document",
             isEnabled: { !$0.browser.pane.selection.isEmpty },
-            run: { if !$0.isEditingText { $0.browser.copy() } }
+            run: { $0.browser.copy() }
         ),
         AppCommand(
             id: .cut,
             title: "Вырезать",
-            shortcut: Shortcut(.character("x"), .command),
+            shortcut: nil,
             icon: "scissors",
             isEnabled: { !$0.browser.isReadOnlyVolume && !$0.browser.pane.selection.isEmpty },
-            run: { if !$0.isEditingText { $0.browser.cut() } }
+            run: { $0.browser.cut() }
         ),
         AppCommand(
             id: .paste,
             title: "Вставить",
-            shortcut: Shortcut(.character("v"), .command),
+            shortcut: nil,
             icon: "clipboard",
             isEnabled: { !$0.browser.isReadOnlyVolume && $0.browser.canPaste },
-            run: { if !$0.isEditingText { $0.browser.paste() } }
+            run: { $0.browser.paste() }
         ),
         AppCommand(
             id: .selectAll,
             title: "Выбрать всё",
-            shortcut: Shortcut(.character("a"), .command),
+            shortcut: nil,
             icon: nil,
             isEnabled: { !$0.browser.items.isEmpty },
-            run: { if !$0.isEditingText { $0.browser.selectAll() } }
+            run: { $0.browser.selectAll() }
         ),
         AppCommand(
             id: .moveToTrash,

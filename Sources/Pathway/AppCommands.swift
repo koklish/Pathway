@@ -21,12 +21,17 @@ struct AppCommands: Commands {
             item(.openClaude)
         }
 
-        CommandGroup(replacing: .pasteboard) {
-            item(.copy)
-            item(.cut)
-            item(.paste)
-            Divider()
-            item(.selectAll)
+        // Группа .pasteboard намеренно не заменяется: её стандартные пункты
+        // несут селекторы copy:/cut:/paste:/selectAll: с target = nil, и
+        // AppKit сам доставляет их по responder chain — в текстовом поле
+        // работает текстовая операция, в списке файловая. Свой Button с
+        // замыканием держит жёсткий target, поэтому он перехватывал бы ⌘C и
+        // до NSTextField клавиша не доходила: в диалогах не работали ни
+        // копирование, ни вставка.
+        //
+        // Файловую сторону реализует FileListView.Coordinator — он first
+        // responder, когда фокус в списке.
+        CommandGroup(after: .pasteboard) {
             Divider()
             item(.moveToTrash)
         }
