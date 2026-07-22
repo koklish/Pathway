@@ -45,6 +45,7 @@ public final class ConnectServerModel {
 
     private let connection: ServerConnection
     private let browser: any ShareBrowsing
+    private let probe: ProtocolProbe
 
     public var bookmarks: ServerBookmarks { connection.bookmarks }
 
@@ -55,10 +56,12 @@ public final class ConnectServerModel {
 
     public init(
         connection: ServerConnection = ServerConnection(),
-        browser: any ShareBrowsing = ShareBrowser()
+        browser: any ShareBrowsing = ShareBrowser(),
+        probe: ProtocolProbe = ProtocolProbe()
     ) {
         self.connection = connection
         self.browser = browser
+        self.probe = probe
     }
 
     public var canSubmit: Bool {
@@ -73,6 +76,21 @@ public final class ConnectServerModel {
             return ServerAddress.parse(addressText) != nil
                 && (login == .guest || !username.isEmpty)
         }
+    }
+
+    /// Заголовок кнопки подтверждения.
+    ///
+    /// Папки обещаем только там, где они есть: список отдаёт лишь SMB, а на
+    /// адресе без схемы протокол ещё не определён — вдруг это FTP, где шар
+    /// не существует вовсе.
+    public var submitTitle: String {
+        if isEditing { return "Сохранить" }
+        if case .address = step,
+           let server = ServerAddress.parse(addressText),
+           server.share.isEmpty, server.scheme == "smb" {
+            return "Показать папки"
+        }
+        return "Подключиться"
     }
 
     /// Хост, на котором идёт авторизация, — для подзаголовка второго экрана.
@@ -147,13 +165,16 @@ public final class ConnectServerModel {
     public func submit() async {
         switch step {
         case .address:
-            guard let server = ServerAddress.parse(addressText) else {
+            guard let parsed = ServerAddress.parse(addressText) else {
                 errorMessage = "Не удалось разобрать адрес. Пример: smb://server/share"
                 return
             }
-            // Папка не указана — покажем, что есть на сервере, вместо того чтобы
-            // молча подключить первую попавшуюся.
-            if server.share.isEmpty {
+            guard let server = await resolveScheme(of: parsed) else { return }
+
+            // Список папок умеет отдавать только SMB: smbutil про другие
+            // протоколы не знает, а у FTP и AFP шар нет вовсе — там сразу
+            // корень, и шаг выбора папки был бы пустым экраном.
+            if server.share.isEmpty, server.scheme == "smb" {
                 await loadShares(of: server.host)
             } else {
                 await connect(server)
@@ -170,6 +191,30 @@ public final class ConnectServerModel {
         case .editing(let server):
             saveSettings(for: server)
         }
+    }
+
+    /// Дополняет адрес протоколом, если пользователь его не назвал.
+    ///
+    /// Пробуем порты вместо того чтобы спрашивать тип подключения: панель
+    /// хостинга даёт логин, пароль и голый IP, и вопрос «какой у вас
+    /// протокол?» пользователю задавать не за что. О результате не сообщаем —
+    /// диалог просто ведёт себя правильно.
+    private func resolveScheme(of server: ServerAddress) async -> ServerAddress? {
+        if server.scheme != nil { return server }
+
+        isConnecting = true
+        errorMessage = nil
+        defer { isConnecting = false }
+
+        guard let scheme = await probe.detect(host: server.host) else {
+            errorMessage = MountError(unknownProtocolAt: server.host).message
+            return nil
+        }
+
+        // Анонимный вход на FTP почти всегда закрыт, поэтому гостя там не
+        // предлагаем: иначе первая попытка гарантированно провалится.
+        login = scheme == "ftp" ? .registered : .guest
+        return server.with(scheme: scheme)
     }
 
     /// Спрашивает у сервера список папок и показывает шаг выбора.

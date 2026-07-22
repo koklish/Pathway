@@ -299,16 +299,6 @@ struct ConnectServerView: View {
         }
     }
 
-    /// На шаге адреса кнопка ведёт к списку папок, если папка не указана.
-    private var submitTitle: String {
-        if model.isEditing { return "Сохранить" }
-        if case .address = model.step,
-           let server = ServerAddress.parse(model.addressText), server.share.isEmpty {
-            return "Показать папки"
-        }
-        return "Подключиться"
-    }
-
     private var footer: some View {
         HStack(spacing: 12) {
             Spacer()
@@ -330,7 +320,7 @@ struct ConnectServerView: View {
                             .controlSize(.small)
                             .tint(.white)
                     }
-                    Text(submitTitle)
+                    Text(model.submitTitle)
                         .font(.system(size: 13, weight: .semibold))
                 }
                 .foregroundStyle(.white)

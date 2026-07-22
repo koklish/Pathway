@@ -6,7 +6,8 @@ import Testing
 @MainActor
 private func makeModel(
     _ behaviour: RecordingMounter.Behaviour,
-    shares: [Share] = []
+    shares: [Share] = [],
+    openPorts: Set<UInt16> = [445]
 ) -> (ConnectServerModel, RecordingMounter, ServerConnection) {
     // Изолированный UserDefaults, чтобы тесты не трогали настройки пользователя.
     let suite = "tests.connect.\(UUID().uuidString)"
@@ -18,8 +19,12 @@ private func makeModel(
         mounter: mounter,
         mounted: MountedServers()
     )
-    // Фейковый браузер обязателен: иначе тест пойдёт в настоящую сеть.
-    let model = ConnectServerModel(connection: connection, browser: FakeShareBrowser(shares: shares))
+    // Фейковый браузер и заглушка проб обязательны: иначе тест пойдёт в сеть.
+    let model = ConnectServerModel(
+        connection: connection,
+        browser: FakeShareBrowser(shares: shares),
+        probe: ProtocolProbe(prober: StubPortProber(open: openPorts))
+    )
     return (model, mounter, connection)
 }
 
@@ -36,6 +41,131 @@ struct ConnectServerModelTests {
 
         #expect(model.step == .credentials(ServerAddress(scheme: "smb", host: "samba.ip.pro", share: "MAIN")))
         #expect(model.authenticatingHost == "samba.ip.pro")
+    }
+
+    // MARK: - Определение протокола
+
+    @Test("голый IP с открытым FTP ведёт на ввод логина, а не на выбор папок")
+    func bareIPWithFTPGoesToCredentials() async {
+        let (model, _, _) = makeModel(.needsAuth, openPorts: [21])
+        model.addressText = "31.31.196.75"
+
+        await model.submit()
+
+        // Не .shares: у FTP нет понятия шары, smbutil про него не знает.
+        #expect(model.step == .credentials(ServerAddress(scheme: "ftp", host: "31.31.196.75", share: "")))
+    }
+
+    @Test("FTP предлагает вход по логину, а не гостем")
+    func ftpDefaultsToRegisteredLogin() async {
+        let (model, _, _) = makeModel(.needsAuth, openPorts: [21])
+        model.addressText = "31.31.196.75"
+
+        await model.submit()
+
+        // Анонимный вход на FTP почти всегда закрыт: предложенный гость
+        // дал бы гарантированный провал первой попытки.
+        #expect(model.login == .registered)
+    }
+
+    @Test("голый хост с открытым SMB показывает список папок")
+    func bareHostWithSMBListsShares() async {
+        let (model, _, _) = makeModel(.needsAuth, shares: [Share(name: "MAIN")], openPorts: [445])
+        model.addressText = "samba.ip.pro"
+
+        await model.submit()
+
+        #expect(model.step == .shares(host: "samba.ip.pro"))
+    }
+
+    @Test("AFP ведёт на ввод логина с гостевым входом по умолчанию")
+    func afpGoesToCredentialsAsGuest() async {
+        let (model, _, _) = makeModel(.needsAuth, openPorts: [548])
+        model.addressText = "mac.local"
+
+        await model.submit()
+
+        #expect(model.step == .credentials(ServerAddress(scheme: "afp", host: "mac.local", share: "")))
+        #expect(model.login == .guest)
+    }
+
+    @Test("хост без открытых портов даёт ошибку, не уходя с экрана адреса")
+    func unreachableHostStaysOnAddress() async {
+        let (model, mounter, _) = makeModel(.needsAuth, openPorts: [])
+        model.addressText = "192.0.2.1"
+
+        await model.submit()
+
+        #expect(model.step == .address)
+        #expect(model.errorMessage != nil)
+        // Монтировать неизвестный протокол не пытаемся.
+        #expect(mounter.callCount == 0)
+    }
+
+    @Test("явная схема в адресе пробу портов не запускает")
+    func explicitSchemeSkipsProbe() async {
+        let prober = StubPortProber(open: [445])
+        let suite = "tests.connect.\(UUID().uuidString)"
+        let connection = ServerConnection(
+            bookmarks: ServerBookmarks(defaults: UserDefaults(suiteName: suite)!),
+            credentials: InMemoryCredentialStore(),
+            mounter: RecordingMounter(.needsAuth),
+            mounted: MountedServers()
+        )
+        let model = ConnectServerModel(
+            connection: connection,
+            browser: FakeShareBrowser(shares: []),
+            probe: ProtocolProbe(prober: prober)
+        )
+        model.addressText = "ftp://31.31.196.75/pub"
+
+        await model.submit()
+
+        // Схема названа пользователем — спрашивать сеть не о чем.
+        #expect(await prober.probed.isEmpty)
+        #expect(model.step == .credentials(ServerAddress(scheme: "ftp", host: "31.31.196.75", share: "pub")))
+    }
+
+    @Test("UNC-адрес пробу портов не запускает")
+    func uncSkipsProbe() async {
+        let prober = StubPortProber(open: [21])
+        let suite = "tests.connect.\(UUID().uuidString)"
+        let connection = ServerConnection(
+            bookmarks: ServerBookmarks(defaults: UserDefaults(suiteName: suite)!),
+            credentials: InMemoryCredentialStore(),
+            mounter: RecordingMounter(.needsAuth),
+            mounted: MountedServers()
+        )
+        let model = ConnectServerModel(
+            connection: connection,
+            browser: FakeShareBrowser(shares: []),
+            probe: ProtocolProbe(prober: prober)
+        )
+        model.addressText = #"\\samba.ip.pro\MAIN"#
+
+        await model.submit()
+
+        // Открытый 21 порт не должен превратить UNC-адрес в FTP.
+        #expect(await prober.probed.isEmpty)
+        #expect(model.step == .credentials(ServerAddress(scheme: "smb", host: "samba.ip.pro", share: "MAIN")))
+    }
+
+    @Test("кнопка обещает список папок только там, где он есть")
+    func submitTitleFollowsKnownScheme() {
+        let (model, _, _) = makeModel(.needsAuth)
+
+        model.addressText = "smb://samba.ip.pro"
+        #expect(model.submitTitle == "Показать папки")
+
+        // Протокол ещё не известен: обещать папки нельзя, у FTP их нет.
+        model.addressText = "31.31.196.75"
+        #expect(model.submitTitle == "Подключиться")
+
+        model.addressText = "ftp://31.31.196.75"
+        #expect(model.submitTitle == "Подключиться")
+
+        model.addressText = "smb://samba.ip.pro/MAIN"
+        #expect(model.submitTitle == "Подключиться")
     }
 
     @Test("адрес без папки показывает список папок сервера")
