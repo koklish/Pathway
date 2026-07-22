@@ -44,6 +44,12 @@ struct MainWindow: View {
                 Divider()
                 StatusBarView(model: model)
             }
+            // Клик по пустому месту — отступам, статус-бару, фону — снимает фокус
+            // с адресной строки. Без этого поле ввода отпускает фокус только на
+            // Enter, Esc или переходе в другую папку.
+            .background {
+                ClickCatcher { NSApp.keyWindow?.makeFirstResponder(nil) }
+            }
         }
         .onAppear {
             model.showHiddenFiles = appState.showHiddenFiles

@@ -85,6 +85,12 @@ struct AddressBarView: View {
             .focused($fieldFocused)
             .onSubmit(commitEditing)
             .onExitCommand { isEditing = false }
+            // Клик мимо поля — куда угодно: в список, в сайдбар, в пустое место —
+            // должен закрывать ввод. Правку при этом отбрасываем: пользователь
+            // ушёл, не подтвердив её, а неявная навигация была бы неожиданной.
+            .onChange(of: fieldFocused) { _, focused in
+                if !focused { isEditing = false }
+            }
             .onAppear {
                 fieldFocused = true
                 // SwiftUI ставит курсор в конец; макет требует выделения всего пути.
