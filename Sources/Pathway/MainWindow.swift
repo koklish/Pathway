@@ -7,13 +7,16 @@ struct MainWindow: View {
     @State private var showConnectServer = false
     @State private var connection = ServerConnection()
     @State private var connectModel: ConnectServerModel
+    /// Сервис обновлений приходит из App: тот же экземпляр видит пункт меню.
+    let updates: UpdateService
     /// Панель живёт в AppState: до неё должны дотягиваться команды главного меню.
     private var model: BrowserModel { appState.browser }
     /// Избранное берётся из общего AppState, чтобы сайдбар и список файлов
     /// меняли один и тот же список.
     private var actions: FolderActions { appState.folderActions }
 
-    init() {
+    init(updates: UpdateService) {
+        self.updates = updates
         // Диалог и сайдбар должны видеть одно состояние подключений.
         let connection = ServerConnection()
         _connection = State(initialValue: connection)
@@ -55,6 +58,15 @@ struct MainWindow: View {
             // Enter, Esc или переходе в другую папку.
             .background {
                 ClickCatcher { NSApp.keyWindow?.makeFirstResponder(nil) }
+            }
+        }
+        .toolbar {
+            // .automatic отдаёт размещение системе, а она вправе положить
+            // элемент в секцию detail вместо правого угла строки заголовка —
+            // именно там значок версии должен быть виден всегда. .primaryAction
+            // это гарантирует.
+            ToolbarItem(placement: .primaryAction) {
+                UpdateBadgeView(service: updates)
             }
         }
         .onAppear {
