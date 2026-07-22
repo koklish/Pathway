@@ -347,6 +347,16 @@ struct ServerConnectionTests {
         #expect(bookmarks.items.first?.server?.host == "nas.local")
     }
 
+    @Test("отмена пользователем читается как отмена, а не как «ошибка -128»")
+    func userCancelReadsAsCancellation() {
+        // -128 — userCanceledErr из Carbon: так NetFS сообщает о закрытии
+        // своего диалога. Без этой ветки пользователь видел загадочное
+        // «Не удалось подключиться (ошибка -128)».
+        let error = MountError(code: -128, host: "31.31.196.75")
+
+        #expect(error.message == "Подключение отменено.")
+    }
+
     @Test("переключение закладки на гостя стирает учётные данные")
     func switchingToGuestClearsCredentials() throws {
         let (connection, _, credentials, bookmarks) = makeConnection(.needsAuth)

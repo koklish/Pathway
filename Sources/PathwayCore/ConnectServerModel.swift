@@ -176,6 +176,12 @@ public final class ConnectServerModel {
             // корень, и шаг выбора папки был бы пустым экраном.
             if server.share.isEmpty, server.scheme == "smb" {
                 await loadShares(of: server.host)
+            } else if server.scheme == "ftp" {
+                // Гостевую пробу пропускаем: анонимный вход на FTP закрыт, и
+                // NetFS на отказ показывает собственный диалог авторизации
+                // вместо внятного EACCES. Пользователь жмёт в нём «Отменить»,
+                // а мы получаем -128 и показываем «ошибка -128» вместо формы.
+                step = .credentials(server)
             } else {
                 await connect(server)
             }

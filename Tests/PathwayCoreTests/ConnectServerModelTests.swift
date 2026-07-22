@@ -56,6 +56,35 @@ struct ConnectServerModelTests {
         #expect(model.step == .credentials(ServerAddress(scheme: "ftp", host: "31.31.196.75", share: "")))
     }
 
+    @Test("FTP не пробует гостевой вход до ввода логина")
+    func ftpDoesNotProbeGuestMount() async {
+        let (model, mounter, _) = makeModel(.needsAuth, openPorts: [21])
+        model.addressText = "31.31.196.75"
+
+        await model.submit()
+
+        // Ни одной попытки монтирования: анонимный вход на FTP закрыт, и
+        // NetFS на отказ показывает собственный диалог авторизации вместо
+        // внятного EACCES. Нажатие «Отменить» в нём возвращает -128, и
+        // пользователь видит «ошибка -128» вместо своей формы входа.
+        #expect(mounter.callCount == 0)
+    }
+
+    @Test("после ввода логина FTP монтируется с учётными данными")
+    func ftpMountsWithCredentials() async {
+        let point = URL(fileURLWithPath: "/Volumes/FTP")
+        let (model, mounter, _) = makeModel(.mounted(point), openPorts: [21])
+        model.addressText = "31.31.196.75"
+        await model.submit()
+
+        model.username = "u3371448"
+        model.password = "a03WiT71hB12uZJi"
+        await model.submit()
+
+        #expect(mounter.lastUser == "u3371448")
+        #expect(mounter.lastGuest == false)
+    }
+
     @Test("FTP предлагает вход по логину, а не гостем")
     func ftpDefaultsToRegisteredLogin() async {
         let (model, _, _) = makeModel(.needsAuth, openPorts: [21])

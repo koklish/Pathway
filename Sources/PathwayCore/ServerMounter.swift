@@ -15,6 +15,10 @@ public struct MountError: LocalizedError, Equatable {
     public let message: String
     public let code: Int32
 
+    /// userCanceledErr из Carbon: так NetFS сообщает, что пользователь закрыл
+    /// системный диалог. Своего имени в Swift у константы нет.
+    static let userCanceledErr: Int32 = -128
+
     public var errorDescription: String? { message }
 
     public init(code: Int32, host: String) {
@@ -53,7 +57,7 @@ public struct MountError: LocalizedError, Equatable {
             return "Сервер «\(host)» не ответил вовремя. Возможно, он выключен или закрыт файрволом."
         case Int32(ECONNREFUSED):
             return "Сервер «\(host)» отклонил подключение. Проверьте, что нужная служба на нём включена."
-        case Int32(ECANCELED):
+        case Int32(ECANCELED), Self.userCanceledErr:
             return "Подключение отменено."
         default:
             return "Не удалось подключиться к «\(host)» (ошибка \(code))."
@@ -94,6 +98,12 @@ public struct ServerMounter: Mounting, Sendable {
         }
 
         let openOptions = NSMutableDictionary()
+        // Свой экран авторизации — единственный: системный диалог NetFS не
+        // знает ни про наши закладки, ни про нашу запись в Связке ключей, а
+        // «Отменить» в нём возвращает -128, который выглядит как загадочный
+        // сбой подключения.
+        openOptions[kNAUIOptionKey as String] = kNAUIOptionNoUI
+
         if guest {
             openOptions[kNetFSUseGuestKey as String] = true
         } else if user != nil {
