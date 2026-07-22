@@ -170,8 +170,52 @@ struct CommandsTests {
 
             state.isEditingText = true
 
-            for id in [CommandID.copy, .cut, .paste, .moveToTrash, .rename, .newFolder, .open, .selectAll] {
+            // Только те, которых текстовое поле не перехватывает.
+            for id in [CommandID.moveToTrash, .rename, .newFolder, .open] {
                 #expect(!CommandRegistry[id].isEnabled(state), "\(id.rawValue) должна гаснуть при вводе текста")
+            }
+        }
+    }
+
+    @Test("выбор буферного пункта мышью при вводе текста файлов не трогает")
+    func pasteboardRunIsInertWhileEditingText() throws {
+        try withTempDir { dir in
+            try Data("x".utf8).write(to: dir.appendingPathComponent("a.txt"))
+            try Data("x".utf8).write(to: dir.appendingPathComponent("b.txt"))
+            let state = makeState(path: dir)
+            state.browser.reload()
+            state.browser.pane.selection = []
+
+            state.isEditingText = true
+            // Проверяем на «Выбрать всё»: его эффект виден прямо в модели, а
+            // copy/cut ушли бы в системный буфер, где и без нас что-то лежит.
+            CommandRegistry[.selectAll].run(state)
+
+            // Пункт живой ради шортката, но клик по нему мышью при открытом
+            // диалоге не должен доставать до списка файлов: responder chain
+            // защищает только клавиши, а мышь идёт прямо в run.
+            #expect(state.browser.pane.selection.isEmpty)
+        }
+    }
+
+    @Test("буферные команды при вводе текста остаются живыми — их берёт поле")
+    func pasteboardCommandsStayEnabledWhileEditingText() throws {
+        try withTempDir { dir in
+            let file = dir.appendingPathComponent("file.txt")
+            try Data("x".utf8).write(to: file)
+            let state = makeState(path: dir)
+            state.browser.reload()
+            state.browser.pane.selection = [file]
+            state.browser.copy()
+
+            state.isEditingText = true
+
+            // Погашенный пункт меню перехватывает шорткат и никуда его не
+            // отдаёт: ⌘C переставал доходить до NSTextField, и в полях
+            // диалога копирование не работало вовсе. Доставку по responder
+            // chain обеспечивает AppKit — пункт для этого должен быть живым.
+            for id in [CommandID.copy, .cut, .paste, .selectAll] {
+                #expect(CommandRegistry[id].isEnabled(state), "\(id.rawValue) нужна текстовому полю")
             }
         }
     }

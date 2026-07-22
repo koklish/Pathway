@@ -154,37 +154,46 @@ public enum CommandRegistry {
 
         // MARK: Правка
 
+        // Буферные команды доступны и во время ввода текста: погашенный пункт
+        // меню перехватывает шорткат и никуда его не отдаёт, так что ⌘C
+        // переставал доходить до NSTextField и в полях диалогов не работал
+        // вовсе. Живой пункт AppKit доставляет по responder chain — фокус в
+        // поле берёт текстовую операцию, фокус в списке файловую.
+        //
+        // Защита переехала в run: responder chain стережёт только клавиши, а
+        // выбор пункта мышью при открытом диалоге пришёл бы сюда напрямую.
+
         AppCommand(
             id: .copy,
             title: "Копировать",
             shortcut: Shortcut(.character("c"), .command),
             icon: "document.on.document",
-            isEnabled: { !$0.isEditingText && !$0.browser.pane.selection.isEmpty },
-            run: { $0.browser.copy() }
+            isEnabled: { !$0.browser.pane.selection.isEmpty },
+            run: { if !$0.isEditingText { $0.browser.copy() } }
         ),
         AppCommand(
             id: .cut,
             title: "Вырезать",
             shortcut: Shortcut(.character("x"), .command),
             icon: "scissors",
-            isEnabled: { !$0.isEditingText && !$0.browser.isReadOnlyVolume && !$0.browser.pane.selection.isEmpty },
-            run: { $0.browser.cut() }
+            isEnabled: { !$0.browser.isReadOnlyVolume && !$0.browser.pane.selection.isEmpty },
+            run: { if !$0.isEditingText { $0.browser.cut() } }
         ),
         AppCommand(
             id: .paste,
             title: "Вставить",
             shortcut: Shortcut(.character("v"), .command),
             icon: "clipboard",
-            isEnabled: { !$0.isEditingText && !$0.browser.isReadOnlyVolume && $0.browser.canPaste },
-            run: { $0.browser.paste() }
+            isEnabled: { !$0.browser.isReadOnlyVolume && $0.browser.canPaste },
+            run: { if !$0.isEditingText { $0.browser.paste() } }
         ),
         AppCommand(
             id: .selectAll,
             title: "Выбрать всё",
             shortcut: Shortcut(.character("a"), .command),
             icon: nil,
-            isEnabled: { !$0.isEditingText && !$0.browser.items.isEmpty },
-            run: { $0.browser.selectAll() }
+            isEnabled: { !$0.browser.items.isEmpty },
+            run: { if !$0.isEditingText { $0.browser.selectAll() } }
         ),
         AppCommand(
             id: .moveToTrash,
