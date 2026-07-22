@@ -60,6 +60,16 @@ public struct AppCommand: Identifiable, Sendable {
 /// Реестр всех команд. Источник правды: заголовок, иконка, шорткат и доступность
 /// описаны здесь один раз, а меню и клавиши только отражают их.
 public enum CommandRegistry {
+    /// Команды, меняющие содержимое диска: на томе только для чтения они
+    /// недоступны.
+    ///
+    /// «Вырезать» в списке потому, что пишет тоже — исходник удаляется при
+    /// вставке. «Архивировать» — потому что архив создаётся рядом с
+    /// исходником, а не во временной папке.
+    public static let writesToDisk: Set<CommandID> = [
+        .newFolder, .rename, .moveToTrash, .paste, .cut, .compress,
+    ]
+
     public static subscript(id: CommandID) -> AppCommand {
         // Реестр строится из CommandID.allCases, поэтому промах невозможен —
         // он означал бы, что команда забыта в table, и это ошибка программиста.
@@ -77,7 +87,7 @@ public enum CommandRegistry {
             title: "Новая папка",
             shortcut: Shortcut(.character("n"), [.command, .shift]),
             icon: "folder.badge.plus",
-            isEnabled: { !$0.isEditingText },
+            isEnabled: { !$0.isEditingText && !$0.browser.isReadOnlyVolume },
             run: { $0.browser.createFolder() }
         ),
         AppCommand(
@@ -94,7 +104,7 @@ public enum CommandRegistry {
             shortcut: Shortcut(.f2),
             icon: "pencil",
             // Переименование за раз только одного элемента: инлайн-редактор в списке один.
-            isEnabled: { !$0.isEditingText && $0.browser.pane.selection.count == 1 },
+            isEnabled: { !$0.isEditingText && !$0.browser.isReadOnlyVolume && $0.browser.pane.selection.count == 1 },
             run: { $0.pendingRename = $0.browser.pane.selection.first }
         ),
         AppCommand(
@@ -102,7 +112,7 @@ public enum CommandRegistry {
             title: "Архивировать…",
             shortcut: nil,
             icon: "archivebox",
-            isEnabled: { !$0.isEditingText && !$0.browser.selectedItems.isEmpty && !$0.browser.isBusy },
+            isEnabled: { !$0.isEditingText && !$0.browser.isReadOnlyVolume && !$0.browser.selectedItems.isEmpty && !$0.browser.isBusy },
             run: { $0.pendingCompress = $0.browser.selectedItems }
         ),
         AppCommand(
@@ -157,7 +167,7 @@ public enum CommandRegistry {
             title: "Вырезать",
             shortcut: Shortcut(.character("x"), .command),
             icon: "scissors",
-            isEnabled: { !$0.isEditingText && !$0.browser.pane.selection.isEmpty },
+            isEnabled: { !$0.isEditingText && !$0.browser.isReadOnlyVolume && !$0.browser.pane.selection.isEmpty },
             run: { $0.browser.cut() }
         ),
         AppCommand(
@@ -165,7 +175,7 @@ public enum CommandRegistry {
             title: "Вставить",
             shortcut: Shortcut(.character("v"), .command),
             icon: "clipboard",
-            isEnabled: { !$0.isEditingText && $0.browser.canPaste },
+            isEnabled: { !$0.isEditingText && !$0.browser.isReadOnlyVolume && $0.browser.canPaste },
             run: { $0.browser.paste() }
         ),
         AppCommand(
@@ -181,7 +191,7 @@ public enum CommandRegistry {
             title: "Переместить в Корзину",
             shortcut: Shortcut(.delete, .command),
             icon: "trash",
-            isEnabled: { !$0.isEditingText && !$0.browser.pane.selection.isEmpty },
+            isEnabled: { !$0.isEditingText && !$0.browser.isReadOnlyVolume && !$0.browser.pane.selection.isEmpty },
             run: { $0.browser.moveSelectionToTrash() }
         ),
 

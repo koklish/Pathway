@@ -33,6 +33,16 @@ public final class BrowserModel {
     /// true, пока идёт чтение папки — для индикатора в интерфейсе.
     public private(set) var isLoading = false
 
+    /// Текущая папка лежит на томе только для чтения — команды записи погашены.
+    ///
+    /// Спрашиваем файловую систему, а не смотрим на схему адреса: FTP через
+    /// NetFS монтируется read-only, но так же ведут себя образ диска,
+    /// заблокированная флешка и чужая папка без прав.
+    ///
+    /// internal(set), а не private(set): тестам нужно поставить флаг без
+    /// настоящего тома, монтировать который они не могут.
+    public internal(set) var isReadOnlyVolume = false
+
     private let loader = DirectoryLoader()
     private let operations = FileOperations()
     private let archiver = ArchiveService()
@@ -133,6 +143,10 @@ public final class BrowserModel {
         let directory = pane.path
         let showHidden = showHiddenFiles
 
+        // Синхронно, до первого await: иначе команды записи успели бы
+        // побывать доступными на томе, который их не примет.
+        isReadOnlyVolume = Self.isReadOnly(directory)
+
         // Уже открытую папку показываем сразу, не дожидаясь диска.
         if let cached = cache.items(for: directory, showHidden: showHidden) {
             items = sorted(cached)
@@ -167,6 +181,16 @@ public final class BrowserModel {
                 errorMessage = Self.describe(error, at: directory)
             }
         }
+    }
+
+    /// Лежит ли папка на томе только для чтения.
+    ///
+    /// Значение кэшируется системой в момент монтирования, так что вызов
+    /// дешёвый и уместен до первого await. Недоступную папку считаем
+    /// доступной для записи: ошибку тогда покажет сама операция, с текстом
+    /// про настоящую причину, а не про мнимый read-only.
+    private static func isReadOnly(_ directory: URL) -> Bool {
+        (try? directory.resourceValues(forKeys: [.volumeIsReadOnlyKey]))?.volumeIsReadOnly ?? false
     }
 
     public func navigate(to url: URL) {

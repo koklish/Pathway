@@ -22,6 +22,82 @@ struct CommandsTests {
         state.browser.items.first { $0.name == name }!.url
     }
 
+    // MARK: - Том только для чтения
+
+    @Test("на томе только для чтения команды записи недоступны")
+    func writeCommandsAreDisabledOnReadOnlyVolume() async throws {
+        try await withTempDirAsync { dir in
+            let state = makeState(path: dir)
+            try Data("текст".utf8).write(to: dir.appendingPathComponent("файл.txt"))
+            state.browser.reloadAsync()
+            await state.browser.waitForLoad()
+            state.browser.pane.selection = [url(of: "файл.txt", in: state)]
+            state.browser.copy()
+
+            state.browser.isReadOnlyVolume = true
+
+            // Вырезать тоже пишет: исходник удаляется при вставке.
+            for id in [CommandID.newFolder, .rename, .moveToTrash, .paste, .compress, .cut] {
+                #expect(!CommandRegistry[id].isEnabled(state), "\(id) должна быть недоступна")
+            }
+        }
+    }
+
+    @Test("на томе только для чтения чтение остаётся доступным")
+    func readCommandsStayEnabledOnReadOnlyVolume() async throws {
+        try await withTempDirAsync { dir in
+            let state = makeState(path: dir)
+            try Data("текст".utf8).write(to: dir.appendingPathComponent("файл.txt"))
+            state.browser.reloadAsync()
+            await state.browser.waitForLoad()
+            state.browser.pane.selection = [url(of: "файл.txt", in: state)]
+
+            state.browser.isReadOnlyVolume = true
+
+            // Копирование с тома — это чтение, и ровно в нём смысл сценария.
+            for id in [CommandID.copy, .open, .revealInFinder, .selectAll] {
+                #expect(CommandRegistry[id].isEnabled(state), "\(id) должна остаться доступной")
+            }
+        }
+    }
+
+    @Test("список пишущих команд совпадает с тем, что гасит isEnabled")
+    func writesToDiskMatchesEnabledRule() async throws {
+        try await withTempDirAsync { dir in
+            let state = makeState(path: dir)
+            try Data("текст".utf8).write(to: dir.appendingPathComponent("файл.txt"))
+            state.browser.reloadAsync()
+            await state.browser.waitForLoad()
+            state.browser.pane.selection = [url(of: "файл.txt", in: state)]
+            state.browser.copy()
+
+            // Набор writesToDisk используется контекстным меню, а isEnabled —
+            // главным. Разойдись они, пункт был бы живым в одном меню и мёртвым
+            // в другом.
+            let enabledBefore = CommandID.allCases.filter { CommandRegistry[$0].isEnabled(state) }
+            state.browser.isReadOnlyVolume = true
+            let enabledAfter = CommandID.allCases.filter { CommandRegistry[$0].isEnabled(state) }
+
+            #expect(Set(enabledBefore).subtracting(enabledAfter) == CommandRegistry.writesToDisk)
+        }
+    }
+
+    @Test("на обычном томе команды записи доступны")
+    func writeCommandsStayEnabledOnWritableVolume() async throws {
+        try await withTempDirAsync { dir in
+            let state = makeState(path: dir)
+            try Data("текст".utf8).write(to: dir.appendingPathComponent("файл.txt"))
+            state.browser.reloadAsync()
+            await state.browser.waitForLoad()
+            state.browser.pane.selection = [url(of: "файл.txt", in: state)]
+
+            #expect(state.browser.isReadOnlyVolume == false)
+            #expect(CommandRegistry[.newFolder].isEnabled(state))
+            #expect(CommandRegistry[.rename].isEnabled(state))
+            #expect(CommandRegistry[.moveToTrash].isEnabled(state))
+        }
+    }
+
     // MARK: - Целостность реестра
 
     @Test("каждая команда описана ровно один раз")

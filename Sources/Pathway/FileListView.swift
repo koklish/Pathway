@@ -515,9 +515,14 @@ struct FileListView: NSViewRepresentable {
             icon: NSImage? = nil
         ) {
             let command = CommandRegistry[id]
+            // На томе только для чтения пункт остаётся видимым, но мёртвым:
+            // без action система гасит его сама. Контекст исполнения у
+            // контекстного меню свой (clickedRow), а вот запрет на запись
+            // общий, и брать его надо из реестра.
+            let writable = !model.isReadOnlyVolume || !CommandRegistry.writesToDisk.contains(id)
             let item = NSMenuItem(
                 title: title ?? command.title,
-                action: action,
+                action: writable ? action : nil,
                 keyEquivalent: command.shortcut?.appKitKey ?? ""
             )
             item.keyEquivalentModifierMask = command.shortcut?.appKitModifiers ?? []
