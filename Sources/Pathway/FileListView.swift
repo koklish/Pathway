@@ -9,9 +9,11 @@ struct FileListView: NSViewRepresentable {
     let model: BrowserModel
     let actions: FolderActions
     @Binding var renamingItem: URL?
+    /// Открывает диалог архивации для выбранных элементов.
+    let onCompress: ([FileItem]) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(model: model, actions: actions, renamingItem: $renamingItem)
+        Coordinator(model: model, actions: actions, renamingItem: $renamingItem, onCompress: onCompress)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -130,6 +132,7 @@ struct FileListView: NSViewRepresentable {
         var actions: FolderActions
         weak var table: NSTableView?
         @Binding var renamingItem: URL?
+        let onCompress: ([FileItem]) -> Void
         private var isSyncingSelection = false
         /// Слепок показанного списка: перерисовываем только когда он реально изменился.
         /// Флаг metadataLoaded здесь обязателен — иначе догрузка размеров и дат
@@ -151,10 +154,16 @@ struct FileListView: NSViewRepresentable {
             table?.reloadData()
         }
 
-        init(model: BrowserModel, actions: FolderActions, renamingItem: Binding<URL?>) {
+        init(
+            model: BrowserModel,
+            actions: FolderActions,
+            renamingItem: Binding<URL?>,
+            onCompress: @escaping ([FileItem]) -> Void
+        ) {
             self.model = model
             self.actions = actions
             self._renamingItem = renamingItem
+            self.onCompress = onCompress
         }
 
         // MARK: - Данные
@@ -359,42 +368,62 @@ struct FileListView: NSViewRepresentable {
             let folder = terminalTarget
 
             if item != nil {
-                add(to: menu, "Открыть", #selector(menuOpen))
+                add(to: menu, "Открыть", #selector(menuOpen), MenuIcon.symbol("arrow.up.forward.app", .systemBlue))
                 menu.addItem(.separator())
             }
 
-            add(to: menu, "Копировать", #selector(menuCopy))
-            add(to: menu, "Вырезать", #selector(menuCut))
-            add(to: menu, "Вставить", #selector(menuPaste))
+            add(to: menu, "Копировать", #selector(menuCopy), MenuIcon.symbol("document.on.document"))
+            add(to: menu, "Вырезать", #selector(menuCut), MenuIcon.symbol("scissors"))
+            add(to: menu, "Вставить", #selector(menuPaste), MenuIcon.symbol("clipboard"))
             menu.addItem(.separator())
 
             if item != nil {
-                add(to: menu, "Переименовать", #selector(menuRename))
+                add(to: menu, "Переименовать", #selector(menuRename), MenuIcon.symbol("pencil"))
             }
-            add(to: menu, "Новая папка", #selector(menuNewFolder))
+            add(to: menu, "Новая папка", #selector(menuNewFolder), MenuIcon.symbol("folder.badge.plus", .systemBlue))
             menu.addItem(.separator())
+
+            // Архивы: одна операция за раз, во время неё пункты неактивны
+            // (пункт без action система выключает сама).
+            if let item {
+                let busy = model.operationTitle != nil
+                if !item.isDirectory && ArchiveService.isArchive(item.url) {
+                    add(to: menu, "Распаковать здесь",
+                        busy ? nil : #selector(menuExtractHere), MenuIcon.symbol("archivebox", .systemBlue))
+                    add(to: menu, "Распаковать в…",
+                        busy ? nil : #selector(menuExtractTo), MenuIcon.symbol("archivebox"))
+                } else {
+                    let targets = archiveTargets
+                    let title = targets.count > 1 ? "Архивировать \(targets.count) объектов…" : "Архивировать…"
+                    add(to: menu, title, busy ? nil : #selector(menuCompress), MenuIcon.symbol("archivebox"))
+                }
+                menu.addItem(.separator())
+            }
 
             // Терминал открывается в кликнутой папке, а для файла или пустого
             // места — в текущей: пункт всегда осмыслен.
-            add(to: menu, "Открыть в Терминале", #selector(menuOpenTerminal))
+            add(to: menu, "Открыть в Терминале", #selector(menuOpenTerminal), MenuIcon.symbol("terminal"))
             if actions.isClaudeAvailable {
-                add(to: menu, "Открыть в Claude Code", #selector(menuOpenClaude))
+                add(to: menu, "Открыть в Claude Code", #selector(menuOpenClaude), MenuIcon.claude)
             }
             menu.addItem(.separator())
 
-            let title = actions.isFavorite(folder) ? "Убрать из избранного" : "Добавить в избранное"
-            add(to: menu, title, #selector(menuToggleFavorite))
-            add(to: menu, "Показать в Finder", #selector(menuRevealInFinder))
+            let isFavorite = actions.isFavorite(folder)
+            let title = isFavorite ? "Убрать из избранного" : "Добавить в избранное"
+            let star = MenuIcon.symbol(isFavorite ? "star.slash" : "star", .systemYellow)
+            add(to: menu, title, #selector(menuToggleFavorite), star)
+            add(to: menu, "Показать в Finder", #selector(menuRevealInFinder), MenuIcon.symbol("macwindow"))
 
             if item != nil {
                 menu.addItem(.separator())
-                add(to: menu, "Переместить в Корзину", #selector(menuMoveToTrash))
+                add(to: menu, "Переместить в Корзину", #selector(menuMoveToTrash), MenuIcon.symbol("trash", .systemRed))
             }
         }
 
-        private func add(to menu: NSMenu, _ title: String, _ action: Selector) {
+        private func add(to menu: NSMenu, _ title: String, _ action: Selector?, _ icon: NSImage? = nil) {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
+            item.image = icon
             menu.addItem(item)
         }
 
@@ -408,6 +437,41 @@ struct FileListView: NSViewRepresentable {
         private var terminalTarget: URL {
             guard let item = clickedItem, item.isDirectory else { return model.pane.path }
             return item.url
+        }
+
+        /// Элементы, которые попадут в архив: вся мультиселекция, если клик был
+        /// по ней, иначе только кликнутый элемент.
+        private var archiveTargets: [FileItem] {
+            guard let item = clickedItem else { return [] }
+            let selected = model.items.filter { model.pane.selection.contains($0.url) }
+            if selected.count > 1, selected.contains(where: { $0.url == item.url }) {
+                return selected
+            }
+            return [item]
+        }
+
+        @objc private func menuCompress() {
+            let targets = archiveTargets
+            guard !targets.isEmpty else { return }
+            onCompress(targets)
+        }
+
+        @objc private func menuExtractHere() {
+            clickedItem.map { model.extract($0) }
+        }
+
+        @objc private func menuExtractTo() {
+            guard let item = clickedItem else { return }
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.canCreateDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.prompt = "Распаковать"
+            panel.message = "Куда распаковать «\(item.name)»"
+            panel.directoryURL = model.pane.path
+            guard panel.runModal() == .OK, let destination = panel.url else { return }
+            model.extract(item, to: destination)
         }
 
         @objc private func menuOpen() { clickedItem.map { model.open($0) } }

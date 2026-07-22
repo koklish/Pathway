@@ -6,6 +6,8 @@ struct MainWindow: View {
     @Environment(AppState.self) private var appState
     @State private var model = BrowserModel(path: FileManager.default.homeDirectoryForCurrentUser)
     @State private var renamingItem: URL?
+    /// Элементы, для которых открыт диалог архивации; nil — диалог закрыт.
+    @State private var compressItems: [FileItem]?
     @State private var showConnectServer = false
     @State private var connection = ServerConnection()
     @State private var connectModel: ConnectServerModel
@@ -40,7 +42,9 @@ struct MainWindow: View {
             VStack(spacing: 0) {
                 AddressBarView(model: model)
                 Divider()
-                FileListView(model: model, actions: actions, renamingItem: $renamingItem)
+                FileListView(model: model, actions: actions, renamingItem: $renamingItem) { items in
+                    compressItems = items
+                }
                 Divider()
                 StatusBarView(model: model)
             }
@@ -70,6 +74,21 @@ struct MainWindow: View {
         }
         .sheet(isPresented: $showConnectServer) {
             ConnectServerView(model: connectModel) { showConnectServer = false }
+        }
+        .sheet(isPresented: Binding(
+            get: { compressItems != nil }, set: { if !$0 { compressItems = nil } }
+        )) {
+            if let items = compressItems {
+                CompressDialogView(model: model, items: items) { compressItems = nil }
+            }
+        }
+        // Распаковка наткнулась на зашифрованный архив — спрашиваем пароль.
+        .sheet(isPresented: Binding(
+            get: { model.passwordRequest != nil }, set: { if !$0 { model.cancelPasswordRequest() } }
+        )) {
+            if let request = model.passwordRequest {
+                ExtractPasswordView(model: model, request: request)
+            }
         }
         .onChange(of: appState.showHiddenFiles) { _, show in
             model.showHiddenFiles = show
