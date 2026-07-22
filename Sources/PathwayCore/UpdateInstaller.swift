@@ -29,17 +29,50 @@ public enum UpdateError: LocalizedError {
 }
 
 /// Как обновление попадает на место установленного приложения.
+///
+/// Два действия, а не одно, потому что между ними стоит человек. Скрипт подмены
+/// отмеряет на закрытие приложения десять секунд и, не дождавшись, выходит ни с
+/// чем. Пока подготовка и запуск были одним вызовом, скрипт стартовал сразу
+/// после загрузки — задолго до того, как пользователь увидит кнопку
+/// «Перезапустить»: он читает заметки к выпуску, дописывает письмо, уходит на
+/// обед, а скрипт к этому времени давно умер, и обновление не ставилось вовсе.
+/// Разделение отдаёт эти десять секунд тому, для чего они и заведены —
+/// ожиданию завершения процесса, а не раздумьям человека.
 public protocol UpdateInstalling: Sendable {
-    /// Распаковывает архив, проверяет содержимое и заменяет текущий бандл.
-    /// После успешного вызова приложение завершается: подменять себя на ходу нельзя.
-    func install(archive: URL) throws
+    /// Распаковывает архив и проверяет содержимое, возвращая путь к бандлу,
+    /// готовому занять место установленного. Ничего не подменяет и не запускает.
+    func prepare(archive: URL) throws -> URL
+
+    /// Пишет скрипт-помощник и стартует его. Скрипт ждёт завершения приложения,
+    /// поэтому вызывать нужно непосредственно перед `NSApp.terminate`, а не
+    /// раньше: отсчёт ожидания идёт с этого момента.
+    func launchInstaller(bundle: URL) throws
+}
+
+/// Закрытие приложения — граница с ОС, вынесенная в протокол по тому же
+/// правилу, что `Mounting` и `TerminalRunning`.
+///
+/// Без неё порядок «сначала скрипт, потом terminate» проверить нечем: в тестовом
+/// процессе `NSApp` не существует, и вызов уронил бы прогон на nil, а не показал
+/// бы, что порядок соблюдён.
+public protocol AppTerminating: Sendable {
+    func terminate()
+}
+
+/// Штатное закрытие через AppKit.
+public struct AppKitTerminator: AppTerminating {
+    public init() {}
+
+    public func terminate() {
+        NSApp.terminate(nil)
+    }
 }
 
 /// Ставит обновление подменой бандла через внешний скрипт.
 public struct BundleUpdateInstaller: UpdateInstalling {
     public init() {}
 
-    public func install(archive: URL) throws {
+    public func prepare(archive: URL) throws -> URL {
         let unpacked = archive.deletingLastPathComponent().appendingPathComponent("unpacked")
         try? FileManager.default.removeItem(at: unpacked)
         try FileManager.default.createDirectory(at: unpacked, withIntermediateDirectories: true)
@@ -50,8 +83,11 @@ public struct BundleUpdateInstaller: UpdateInstalling {
             throw UpdateError.unpackFailed
         }
 
-        let newBundle = try verifiedBundle(in: unpacked)
-        try launchHelper(replacing: Bundle.main.bundleURL, with: newBundle)
+        return try verifiedBundle(in: unpacked)
+    }
+
+    public func launchInstaller(bundle: URL) throws {
+        try launchHelper(replacing: Bundle.main.bundleURL, with: bundle)
     }
 
     // MARK: - Проверка до подмены

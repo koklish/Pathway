@@ -16,7 +16,12 @@ public enum UpdateState: Equatable, Sendable {
     case checking
     case available(ReleaseInfo)
     case downloading(Double)
-    case readyToRestart
+    /// Параметр — путь к проверенному бандлу, который ждёт подмены. Лежит внутри
+    /// состояния по той же причине, что и релиз у `.failed`: отдельное поле рядом
+    /// с `state` — это второй источник правды, который уже однажды разошёлся с
+    /// первым. Пока путь живёт в самом случае, «готово к перезапуску без
+    /// подготовленного бандла» невыразимо, а не просто маловероятно.
+    case readyToRestart(URL)
     case failed(String, ReleaseInfo?)
 }
 
@@ -32,6 +37,7 @@ public final class UpdateService {
 
     private let fetcher: any ReleaseFetching
     private let installer: any UpdateInstalling
+    private let terminator: any AppTerminating
     private let defaults: UserDefaults
     private let session: URLSession
 
@@ -44,6 +50,7 @@ public final class UpdateService {
         currentVersion: AppVersion? = nil,
         fetcher: any ReleaseFetching = GitHubReleaseFetcher(),
         installer: any UpdateInstalling = BundleUpdateInstaller(),
+        terminator: any AppTerminating = AppKitTerminator(),
         defaults: UserDefaults = .standard,
         session: URLSession = .shared
     ) {
@@ -51,6 +58,7 @@ public final class UpdateService {
         self.currentVersion = currentVersion ?? bundled.flatMap(AppVersion.init) ?? AppVersion("0.0.0")!
         self.fetcher = fetcher
         self.installer = installer
+        self.terminator = terminator
         self.defaults = defaults
         self.session = session
     }
@@ -130,8 +138,12 @@ public final class UpdateService {
 
         do {
             let archive = try await downloadArchive(release)
-            try installer.install(archive: archive)
-            state = .readyToRestart
+            // Только подготовка: распаковать и проверить. Скрипт подмены здесь не
+            // запускается — он отмеряет на закрытие приложения десять секунд, а
+            // между этим моментом и нажатием «Перезапустить» проходит сколько
+            // угодно времени. Запуск перенесён в restart().
+            let prepared = try installer.prepare(archive: archive)
+            state = .readyToRestart(prepared)
         } catch {
             // Релиз — тот же самый, на котором упали: сохраняем его в состоянии,
             // а не в отдельном поле, иначе следующая неудачная проверка не смогла
@@ -203,8 +215,26 @@ public final class UpdateService {
         }
     }
 
-    /// Закрывает приложение — дальше работает скрипт-помощник.
+    /// Запускает подмену бандла и закрывает приложение — дальше работает
+    /// скрипт-помощник.
+    ///
+    /// Порядок именно такой: скрипт первым делом ждёт исчезновения процесса, и
+    /// стартовать он обязан до `terminate`, а не после — после нас звать его
+    /// уже некому. Отсчёт ожидания начинается здесь, поэтому в десять секунд
+    /// укладывается обычное закрытие приложения, а не раздумья человека.
     public func restart() {
-        NSApp.terminate(nil)
+        guard case .readyToRestart(let bundle) = state else { return }
+
+        do {
+            try installer.launchInstaller(bundle: bundle)
+        } catch {
+            // Приложение не закрываем: скрипт не стартовал, подменять бандл
+            // некому, и закрытие оставило бы человека без обновления и без
+            // объяснения. Релиз в .failed кладём nil — архив уже скачан и
+            // распакован, повторять имеет смысл не загрузку, а проверку.
+            state = .failed(error.localizedDescription, nil)
+            return
+        }
+        terminator.terminate()
     }
 }

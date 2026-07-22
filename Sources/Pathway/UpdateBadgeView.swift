@@ -83,6 +83,8 @@ struct UpdateBadgeView: View {
                     .monospacedDigit()
             }
 
+        // Путь к подготовленному бандлу значку не нужен — он сидит в состоянии
+        // ради restart(), который берёт его оттуда сам.
         case .readyToRestart:
             Button("Перезапустить") { service.restart() }
                 .font(.caption)

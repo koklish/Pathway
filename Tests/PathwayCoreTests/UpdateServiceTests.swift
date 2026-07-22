@@ -47,13 +47,42 @@ actor AsyncGate {
 }
 
 /// Подменяет установщик: настоящий трогает /Applications.
+///
+/// Подготовку и запуск скрипта считает по отдельности: только раздельные
+/// счётчики позволяют утверждать, что после `download()` скрипт ещё не
+/// стартовал, а не просто «установка чем-то занималась».
 final class FakeInstaller: UpdateInstalling, @unchecked Sendable {
-    private(set) var installed: URL?
+    private(set) var prepared: URL?
+    private(set) var prepareCount = 0
+    private(set) var launchedBundle: URL?
+    private(set) var launchCount = 0
     var error: (any Error)?
+    var launchError: (any Error)?
 
-    func install(archive: URL) throws {
+    /// Путь, который `prepare` выдаёт за проверенный бандл. Настоящий установщик
+    /// вернул бы распакованный .app, тесту достаточно любого стабильного URL.
+    let preparedBundle = URL(fileURLWithPath: "/tmp/PathwayUpdateTest/Проводник.app")
+
+    func prepare(archive: URL) throws -> URL {
+        prepareCount += 1
         if let error { throw error }
-        installed = archive
+        prepared = archive
+        return preparedBundle
+    }
+
+    func launchInstaller(bundle: URL) throws {
+        launchCount += 1
+        if let launchError { throw launchError }
+        launchedBundle = bundle
+    }
+}
+
+/// Подменяет закрытие приложения: настоящее уронило бы прогон вместе с тестом.
+final class FakeTerminator: AppTerminating, @unchecked Sendable {
+    private(set) var terminateCount = 0
+
+    func terminate() {
+        terminateCount += 1
     }
 }
 
@@ -114,6 +143,7 @@ struct UpdateServiceTests {
         current: String = "1.0.0",
         fetcher: FakeReleaseFetcher,
         installer: FakeInstaller = FakeInstaller(),
+        terminator: FakeTerminator = FakeTerminator(),
         defaults: UserDefaults? = nil,
         session: URLSession = .shared
     ) -> UpdateService {
@@ -121,6 +151,7 @@ struct UpdateServiceTests {
             currentVersion: AppVersion(current)!,
             fetcher: fetcher,
             installer: installer,
+            terminator: terminator,
             defaults: defaults ?? makeDefaults(),
             session: session
         )
@@ -284,8 +315,8 @@ struct UpdateServiceTests {
 
         await service.download()
 
-        #expect(service.state == .readyToRestart)
-        #expect(installer.installed != nil)
+        #expect(service.state == .readyToRestart(installer.preparedBundle))
+        #expect(installer.prepared != nil)
     }
 
     @Test("нулевой ожидаемый размер не даёт NaN в прогрессе")
@@ -296,15 +327,17 @@ struct UpdateServiceTests {
         // отрисовку прогресс-бара.
         StubURLProtocol.data = Data(repeating: 0x41, count: 1024)
         StubURLProtocol.headers = [:]
+        let installer = FakeInstaller()
         let service = makeService(
             fetcher: FakeReleaseFetcher(release: makeRelease("1.1.0", size: 0)),
+            installer: installer,
             session: StubURLProtocol.session()
         )
         await service.checkManually()
 
         await service.download()
 
-        #expect(service.state == .readyToRestart)
+        #expect(service.state == .readyToRestart(installer.preparedBundle))
     }
 
     @Test("повторная загрузка после сбоя не требует новой проверки GitHub")
@@ -334,7 +367,7 @@ struct UpdateServiceTests {
         installer.error = nil
         await service.download()
 
-        #expect(service.state == .readyToRestart)
+        #expect(service.state == .readyToRestart(installer.preparedBundle))
         #expect(fetcher.callCount == 1)
     }
 
@@ -391,6 +424,100 @@ struct UpdateServiceTests {
         }
         #expect(releaseAfterNoOpDownload == nil)
         #expect(fetcher.callCount == 2)
+    }
+
+    @Test("после загрузки скрипт подмены ещё не запущен, а после перезапуска запущен")
+    @MainActor
+    func downloadPreparesWithoutLaunchingHelper() async {
+        // Ловит исходный дефект: install() последним действием стартовал скрипт,
+        // то есть отсчёт «жду закрытия приложения» начинался сразу после
+        // загрузки. Скрипт ждёт 10 секунд и выходит, а человек к кнопке
+        // «Перезапустить» за это время почти никогда не успевает — обновление не
+        // ставилось вовсе, молча и без обратной связи. Подготовка обязана
+        // случиться при download(), запуск — только при restart().
+        StubURLProtocol.data = Data(repeating: 0x41, count: 4096)
+        StubURLProtocol.headers = ["Content-Length": "4096"]
+        let installer = FakeInstaller()
+        let terminator = FakeTerminator()
+        let service = makeService(
+            fetcher: FakeReleaseFetcher(release: makeRelease("1.1.0", size: 4096)),
+            installer: installer,
+            terminator: terminator,
+            session: StubURLProtocol.session()
+        )
+        await service.checkManually()
+
+        await service.download()
+
+        #expect(installer.prepareCount == 1)
+        // Ключевая проверка дефекта: скрипт не должен быть запущен, пока человек
+        // не нажал «Перезапустить».
+        #expect(installer.launchCount == 0)
+        #expect(terminator.terminateCount == 0)
+        #expect(service.state == .readyToRestart(installer.preparedBundle))
+
+        service.restart()
+
+        #expect(installer.launchCount == 1)
+        // Запускается ровно тот бандл, который подготовили: путь берётся из
+        // самого состояния, а не из отдельного поля рядом с ним.
+        #expect(installer.launchedBundle == installer.preparedBundle)
+        #expect(terminator.terminateCount == 1)
+    }
+
+    @Test("несостоявшийся запуск скрипта показывает ошибку, а не тихо закрывает приложение")
+    @MainActor
+    func failedHelperLaunchReportsErrorAndKeepsAppAlive() async {
+        // Если скрипт не стартовал, подменять бандл после закрытия некому.
+        // Закрыться молча — значит оставить человека без обновления и без
+        // объяснения, поэтому restart() обязан остаться в .failed.
+        StubURLProtocol.data = Data(repeating: 0x41, count: 4096)
+        StubURLProtocol.headers = ["Content-Length": "4096"]
+        let installer = FakeInstaller()
+        installer.launchError = UpdateError.installFailed("тест")
+        let terminator = FakeTerminator()
+        let service = makeService(
+            fetcher: FakeReleaseFetcher(release: makeRelease("1.1.0", size: 4096)),
+            installer: installer,
+            terminator: terminator,
+            session: StubURLProtocol.session()
+        )
+        await service.checkManually()
+        await service.download()
+
+        service.restart()
+
+        // Приложение обязано остаться живым: подменять бандл после закрытия
+        // было бы некому.
+        #expect(terminator.terminateCount == 0)
+
+        guard case .failed(let message, let release) = service.state else {
+            Issue.record("ожидалось состояние .failed после сбоя запуска, получено \(service.state)")
+            return
+        }
+        #expect(message == UpdateError.installFailed("тест").localizedDescription)
+        // Архив уже скачан и распакован: повторять имеет смысл проверку, а не
+        // загрузку, поэтому релиза для повтора в состоянии нет.
+        #expect(release == nil)
+    }
+
+    @Test("перезапуск без подготовленного обновления ничего не запускает")
+    @MainActor
+    func restartWithoutPreparedUpdateDoesNothing() async {
+        // Состояние — единственный источник правды о готовности: нет
+        // .readyToRestart, значит подменять нечем, и звать скрипт не с чем.
+        let installer = FakeInstaller()
+        let terminator = FakeTerminator()
+        let service = makeService(
+            fetcher: FakeReleaseFetcher(release: makeRelease("1.1.0")),
+            installer: installer,
+            terminator: terminator
+        )
+
+        service.restart()
+
+        #expect(installer.launchCount == 0)
+        #expect(terminator.terminateCount == 0)
     }
 
     @Test("разбирает ответ GitHub")
