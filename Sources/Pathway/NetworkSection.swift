@@ -1,3 +1,4 @@
+import AppKit
 import PathwayCore
 import SwiftUI
 
@@ -256,28 +257,46 @@ private struct ServerRow: View {
     @ViewBuilder
     private var menuItems: some View {
         if isMounted {
-            Button("Открыть") { openMountPoint() }
-            Button("Отключить") { disconnect() }
+            Button {
+                openMountPoint()
+            } label: {
+                MenuLabel("Открыть", symbol: "arrow.up.forward.app", color: .systemBlue)
+            }
+            Button {
+                disconnect()
+            } label: {
+                MenuLabel("Отключить", symbol: "eject")
+            }
         } else {
-            Button("Подключиться") { connect() }
+            Button {
+                connect()
+            } label: {
+                MenuLabel("Подключиться", symbol: "externaldrive.badge.plus", color: .systemBlue)
+            }
         }
 
         Divider()
 
-        Button("Изменить настройки…", action: onEditSettings)
+        Button(action: onEditSettings) {
+            MenuLabel("Изменить настройки…", symbol: "gearshape")
+        }
 
         // Пункт, который ничего не делает, хуже отсутствующего.
         if hasSavedPassword {
-            Button("Забыть пароль") {
+            Button {
                 connection.forgetPassword(for: server)
                 hasSavedPassword = false
+            } label: {
+                MenuLabel("Забыть пароль", symbol: "key.slash")
             }
         }
 
         // У тома, смонтированного мимо приложения, закладки нет — удалять нечего.
         if entry.bookmark != nil {
             Divider()
-            Button("Удалить из списка", action: onRemove)
+            Button(action: onRemove) {
+                MenuLabel("Удалить из списка", symbol: "trash", color: .systemRed)
+            }
         }
     }
 

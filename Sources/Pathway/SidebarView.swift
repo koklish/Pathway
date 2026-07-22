@@ -1,3 +1,4 @@
+import AppKit
 import PathwayCore
 import SwiftUI
 
@@ -165,8 +166,10 @@ private struct FavoriteRow: View {
         .contextMenu {
             FolderMenuItems(folder: favorite.url, actions: actions, model: model)
             Divider()
-            Button("Убрать из избранного") {
+            Button {
                 actions.favorites.remove(favorite.id)
+            } label: {
+                MenuLabel("Убрать из избранного", symbol: "star.slash", color: .systemYellow)
             }
         }
     }
@@ -347,8 +350,15 @@ struct TreeNode: View {
             if let actions {
                 FolderMenuItems(folder: url, actions: actions, model: model)
                 Divider()
-                Button(actions.isFavorite(url) ? "Убрать из избранного" : "Добавить в избранное") {
+                let isFavorite = actions.isFavorite(url)
+                Button {
                     actions.toggleFavorite(url)
+                } label: {
+                    MenuLabel(
+                        isFavorite ? "Убрать из избранного" : "Добавить в избранное",
+                        symbol: isFavorite ? "star.slash" : "star",
+                        color: .systemYellow
+                    )
                 }
             }
         }
@@ -376,12 +386,51 @@ struct FolderMenuItems: View {
     let model: BrowserModel
 
     var body: some View {
-        Button("Открыть в Терминале") { actions.openTerminal(at: folder) }
+        Button {
+            actions.openTerminal(at: folder)
+        } label: {
+            MenuLabel("Открыть в Терминале", symbol: "terminal")
+        }
         if actions.isClaudeAvailable {
-            Button("Открыть в Claude Code") { actions.openClaude(at: folder) }
+            Button {
+                actions.openClaude(at: folder)
+            } label: {
+                MenuLabel("Открыть в Claude Code", image: MenuIcon.claude)
+            }
         }
         Divider()
-        Button("Показать в Finder") { actions.revealInFinder(folder) }
+        Button {
+            actions.revealInFinder(folder)
+        } label: {
+            MenuLabel("Показать в Finder", symbol: "macwindow")
+        }
+    }
+}
+
+/// Пункт меню с иконкой.
+///
+/// SwiftUI показывает символ в `Label` монохромным и игнорирует `foregroundStyle`
+/// внутри меню, поэтому цветные и не-символьные иконки (например, у Claude)
+/// готовятся как NSImage и отдаются через `Image(nsImage:)`.
+struct MenuLabel: View {
+    let title: String
+    let image: NSImage?
+
+    init(_ title: String, image: NSImage?) {
+        self.title = title
+        self.image = image
+    }
+
+    init(_ title: String, symbol: String, color: NSColor = .secondaryLabelColor) {
+        self.init(title, image: MenuIcon.symbol(symbol, color))
+    }
+
+    var body: some View {
+        if let image {
+            Label { Text(title) } icon: { Image(nsImage: image) }
+        } else {
+            Text(title)
+        }
     }
 }
 
