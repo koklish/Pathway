@@ -9,7 +9,7 @@ struct ServerEntry: Identifiable {
     /// Пусто у томов, смонтированных мимо приложения: удалять из списка нечего.
     let bookmark: ServerBookmark?
 
-    var id: String { server.url.absoluteString }
+    var id: String { server.key }
 }
 
 /// Секция «Сеть»: сохранённые серверы и кнопка нового подключения.
@@ -33,11 +33,11 @@ struct NetworkSection: View {
         var seen: Set<String> = []
 
         for bookmark in connection.bookmarks.items {
-            guard let server = bookmark.server, seen.insert(server.url.absoluteString).inserted else { continue }
+            guard let server = bookmark.server, seen.insert(server.key).inserted else { continue }
             result.append(ServerEntry(server: server, name: bookmark.name, bookmark: bookmark))
         }
         for volume in connection.mounted.networkVolumes {
-            guard seen.insert(volume.server.url.absoluteString).inserted else { continue }
+            guard seen.insert(volume.server.key).inserted else { continue }
             result.append(ServerEntry(server: volume.server, name: volume.name, bookmark: nil))
         }
         return result
@@ -232,9 +232,9 @@ private struct ServerRow: View {
         }
         .padding(.horizontal, 6)
         .onHover { isHovering = $0 }
-        .help(server.url.absoluteString.removingPercentEncoding ?? server.url.absoluteString)
+        .help(server.key.removingPercentEncoding ?? server.key)
         .contextMenu { menuItems }
-        .task(id: server.url.absoluteString) {
+        .task(id: server.key) {
             hasSavedPassword = connection.hasSavedPassword(for: server)
         }
     }

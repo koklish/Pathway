@@ -58,7 +58,7 @@ public final class ServerConnection {
     }
 
     public func isConnecting(_ server: ServerAddress) -> Bool {
-        connecting.contains(server.url.absoluteString)
+        connecting.contains(server.key)
     }
 
     // MARK: - Подключение
@@ -75,7 +75,7 @@ public final class ServerConnection {
         asGuest: Bool = false,
         remember: Bool = false
     ) async -> ConnectionOutcome {
-        let key = server.url.absoluteString
+        let key = server.key
         connecting.insert(key)
         defer { connecting.remove(key) }
 

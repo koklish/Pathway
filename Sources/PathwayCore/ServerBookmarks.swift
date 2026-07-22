@@ -17,7 +17,7 @@ public struct ServerBookmark: Identifiable, Equatable, Hashable, Sendable, Codab
     }
 
     public init(_ server: ServerAddress, isGuest: Bool = false) {
-        self.address = server.url.absoluteString
+        self.address = server.key
         self.name = server.displayName
         self.isGuest = isGuest
     }
@@ -72,17 +72,17 @@ public final class ServerBookmarks {
     }
 
     public func remove(_ server: ServerAddress) {
-        items.removeAll { $0.address == server.url.absoluteString }
+        items.removeAll { $0.address == server.key }
         save()
     }
 
     public func bookmark(for server: ServerAddress) -> ServerBookmark? {
-        items.first { $0.address == server.url.absoluteString }
+        items.first { $0.address == server.key }
     }
 
     /// Меняет способ входа у сохранённой закладки, не трогая её место в списке.
     public func setGuest(_ isGuest: Bool, for server: ServerAddress) {
-        guard let index = items.firstIndex(where: { $0.address == server.url.absoluteString }) else { return }
+        guard let index = items.firstIndex(where: { $0.address == server.key }) else { return }
         items[index].isGuest = isGuest
         save()
     }
@@ -90,7 +90,7 @@ public final class ServerBookmarks {
     /// Заменяет адрес закладки, сохраняя её позицию.
     public func replace(_ server: ServerAddress, with updated: ServerAddress, isGuest: Bool) {
         let replacement = ServerBookmark(updated, isGuest: isGuest)
-        guard let index = items.firstIndex(where: { $0.address == server.url.absoluteString }) else {
+        guard let index = items.firstIndex(where: { $0.address == server.key }) else {
             remember(updated, isGuest: isGuest)
             return
         }

@@ -22,6 +22,15 @@ public struct MountError: LocalizedError, Equatable {
         self.message = Self.describe(code: code, host: host)
     }
 
+    /// Тип сервера не определился: ни один из известных портов не отвечает.
+    public init(unknownProtocolAt host: String) {
+        self.code = Int32(EPROTONOSUPPORT)
+        self.message = """
+            Не удалось определить тип сервера «\(host)». \
+            Проверьте адрес или укажите протокол явно — например, «ftp://\(host)».
+            """
+    }
+
     /// Не удалось отключить том. Чаще всего причина одна — на нём открыты файлы.
     public init(busyVolumeAt mountPoint: URL) {
         self.code = Int32(EBUSY)
@@ -78,6 +87,12 @@ public struct ServerMounter: Mounting, Sendable {
         password: String? = nil,
         guest: Bool = false
     ) throws -> MountResult {
+        // Схема к этому моменту обязана быть определена: ConnectServerModel
+        // либо берёт её из адреса, либо выясняет пробой портов.
+        guard let url = server.url else {
+            throw MountError(unknownProtocolAt: server.host)
+        }
+
         let openOptions = NSMutableDictionary()
         if guest {
             openOptions[kNetFSUseGuestKey as String] = true
@@ -92,7 +107,7 @@ public struct ServerMounter: Mounting, Sendable {
 
         var mountpoints: Unmanaged<CFArray>?
         let status = NetFSMountURLSync(
-            server.url as CFURL,
+            url as CFURL,
             nil,
             user as CFString?,
             password as CFString?,

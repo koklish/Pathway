@@ -104,7 +104,7 @@ public struct KeychainCredentialStore: CredentialStoring {
         ]
     }
 
-    private static func protocolValue(for scheme: String) -> CFString {
+    private static func protocolValue(for scheme: String?) -> CFString {
         switch scheme {
         case "smb", "cifs": kSecAttrProtocolSMB
         case "afp": kSecAttrProtocolAFP

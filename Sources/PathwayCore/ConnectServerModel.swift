@@ -119,7 +119,7 @@ public final class ConnectServerModel {
     /// Открывает форму настроек сохранённого сервера.
     public func startEditing(_ server: ServerAddress) {
         step = .editing(server)
-        addressText = server.url.absoluteString.removingPercentEncoding ?? server.url.absoluteString
+        addressText = server.key.removingPercentEncoding ?? server.key
         username = connection.savedUser(for: server) ?? ""
         password = ""
         hasStoredPassword = connection.hasSavedPassword(for: server)
@@ -162,7 +162,7 @@ public final class ConnectServerModel {
         case .shares(let host):
             // Кнопка на этом шаге подключает к выбранной папке; если ничего
             // не выбрано, подключаемся к серверу целиком — как раньше.
-            await connect(ServerAddress(scheme: ServerAddress.defaultScheme, host: host, share: ""))
+            await connect(ServerAddress(scheme: "smb", host: host, share: ""))
 
         case .credentials(let server):
             await connect(server, withCredentials: true)
@@ -200,8 +200,8 @@ public final class ConnectServerModel {
 
     /// Подключается к выбранной папке сервера.
     public func selectShare(_ share: Share, host: String) async {
-        let server = ServerAddress(scheme: ServerAddress.defaultScheme, host: host, share: share.name)
-        addressText = server.url.absoluteString.removingPercentEncoding ?? server.url.absoluteString
+        let server = ServerAddress(scheme: "smb", host: host, share: share.name)
+        addressText = server.key.removingPercentEncoding ?? server.key
         await connect(server)
     }
 

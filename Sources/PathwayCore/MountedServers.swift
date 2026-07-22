@@ -103,6 +103,8 @@ public final class MountedServers {
     }
 
     private static func key(_ server: ServerAddress) -> String {
-        "\(server.scheme)://\(server.host)/\(server.share)"
+        // Через server.key, а не интерполяцией: схема опциональна, и «\(scheme)»
+        // подставил бы в ключ строку «Optional("smb")».
+        server.key
     }
 }

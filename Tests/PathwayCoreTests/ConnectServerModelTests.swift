@@ -233,6 +233,6 @@ struct ConnectServerModelTests {
         let reloaded = ServerBookmarks(defaults: defaults)
 
         #expect(reloaded.items.count == 2)
-        #expect(reloaded.items.first?.address == server.url.absoluteString)
+        #expect(reloaded.items.first?.address == server.url?.absoluteString)
     }
 }

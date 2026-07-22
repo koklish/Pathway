@@ -6,12 +6,17 @@ import Foundation
 /// просто «nas.local». Разбор приводит всё это к валидному URL с явной схемой.
 public struct ServerAddress: Equatable, Hashable, Sendable {
     /// Схема без «://» — smb, ftp, afp, https…
-    public let scheme: String
+    ///
+    /// nil, когда пользователь ввёл голый хост или IP: протокол тогда ещё не
+    /// известен и определяется пробой портов. Подставлять smb нельзя —
+    /// панель хостинга даёт адрес вида «31.31.196.75», и догадка выдала бы
+    /// себя за факт.
+    public let scheme: String?
     public let host: String
     /// Путь к ресурсу без ведущего слэша; пустой, если указан только хост.
     public let share: String
 
-    public init(scheme: String, host: String, share: String) {
+    public init(scheme: String?, host: String, share: String) {
         self.scheme = scheme
         self.host = host
         self.share = share
@@ -20,16 +25,31 @@ public struct ServerAddress: Equatable, Hashable, Sendable {
     /// Схемы, которые умеет монтировать NetFS.
     public static let knownSchemes = ["smb", "afp", "nfs", "ftp", "http", "https", "cifs"]
 
-    /// Схема по умолчанию: чаще всего подключают SMB.
-    public static let defaultScheme = "smb"
+    /// Тот же адрес с определённой схемой.
+    public func with(scheme: String) -> ServerAddress {
+        ServerAddress(scheme: scheme, host: host, share: share)
+    }
 
-    public var url: URL {
+    /// nil, пока схема неизвестна: смонтировать такой адрес нельзя.
+    public var url: URL? {
+        guard let scheme else { return nil }
         var text = "\(scheme)://\(host)"
         if !share.isEmpty { text += "/\(share)" }
         // Пробелы и кириллица в имени шары — обычное дело, их нужно экранировать.
         let allowed = CharacterSet.urlPathAllowed.union(CharacterSet(charactersIn: "://@"))
         return URL(string: text.addingPercentEncoding(withAllowedCharacters: allowed) ?? text)
-            ?? URL(string: "\(scheme)://\(host)")!
+            ?? URL(string: "\(scheme)://\(host)")
+    }
+
+    /// Строка-идентификатор: ключ закладок, множества «подключается», записей
+    /// Связки ключей.
+    ///
+    /// Формат совпадает с url.absoluteString, включая экранирование: закладки
+    /// уже сохранены у пользователя в этом виде, и смена формата осиротила бы
+    /// их. Для адреса без схемы остаётся хост — такой адрес до монтирования
+    /// всё равно не доживает, но ключ нужен, чтобы показать спиннер.
+    public var key: String {
+        url?.absoluteString ?? host
     }
 
     /// Имя для показа в списке: «Общие (nas-office.local)» или просто хост.
@@ -47,17 +67,24 @@ public struct ServerAddress: Equatable, Hashable, Sendable {
         var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
 
+        // Проверяем до замены слэшей: дальше «\\host» и «//host» неразличимы,
+        // а знать, что запись была UNC, нужно ради схемы.
+        let isUNC = text.hasPrefix(#"\\"#)
+
         // Обратные слэши — разделители пути в UNC; дальше разбор общий.
         text = text.replacingOccurrences(of: #"\"#, with: "/")
 
-        var scheme = defaultScheme
+        // Схема известна только там, где пользователь назвал её сам.
+        var scheme: String?
         if let range = text.range(of: "://") {
             let parsed = String(text[text.startIndex..<range.lowerBound]).lowercased()
             guard knownSchemes.contains(parsed) else { return nil }
             scheme = parsed
             text = String(text[range.upperBound...])
-        } else if text.hasPrefix("//") {
-            // Привычная запись «//samba.ip.pro» — та же схема по умолчанию.
+        } else if isUNC || text.hasPrefix("//") {
+            // «\\host\share» и «//host» — запись из мира Windows, она
+            // означает SMB и пробы портов не требует.
+            scheme = "smb"
             text = String(text.dropFirst(2))
         }
 

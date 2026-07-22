@@ -114,6 +114,18 @@ struct MountedServersTests {
         #expect(servers.networkVolumes.first?.mountPoint.path == "/Volumes/MAIN")
     }
 
+    @Test("адрес от getmntinfo остаётся smb, а не теряет схему")
+    func systemMountSourceKeepsSMBScheme() throws {
+        // Ровно та форма, в которой система отдаёт f_mntfromname: схемы в ней
+        // нет, только «//». Если бы такой адрес разбирался без протокола,
+        // смонтированный в Finder том исчез бы из сайдбара.
+        let adopted = try #require(ServerAddress.parse("//GUEST@samba.ip.pro/MAIN"))
+
+        #expect(adopted.scheme == "smb")
+        #expect(adopted.host == "samba.ip.pro")
+        #expect(adopted.share == "MAIN")
+    }
+
     @Test("разные серверы не схлопываются")
     func differentServersStay() {
         let servers = MountedServers()
