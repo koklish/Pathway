@@ -52,6 +52,10 @@ struct FileListView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.model = model
         context.coordinator.actions = actions
+        // Биндинг переприсваиваем на каждом обновлении: координатор создаётся один
+        // раз и иначе навсегда сохранил бы биндинг от первого рендера, запись в
+        // который не доходит до @State и не вызывает перерисовку.
+        context.coordinator.rebind(renamingItem: $renamingItem)
         context.coordinator.reloadIfContentChanged()
         context.coordinator.syncSelection()
         context.coordinator.beginRenamingIfNeeded()
@@ -92,9 +96,15 @@ struct FileListView: NSViewRepresentable {
             super.init(frame: .zero)
             self.identifier = identifier
 
-            let text = NSTextField(labelWithString: "")
+            // Не labelWithString: label не берёт фокус, и makeFirstResponder при
+            // переименовании молча возвращает false. Внешне поле остаётся плоским.
+            let text = NSTextField()
+            text.isEditable = false
+            text.isSelectable = true
             text.lineBreakMode = .byTruncatingTail
             text.isBordered = false
+            text.isBezeled = false
+            text.focusRingType = .none
             text.drawsBackground = false
             addSubview(text)
             textField = text
@@ -134,6 +144,12 @@ struct FileListView: NSViewRepresentable {
         @Binding var renamingItem: URL?
         let onCompress: ([FileItem]) -> Void
         private var isSyncingSelection = false
+        /// Элемент, для которого редактор уже открыт: не даёт перезапускать правку.
+        private var editingItem: URL?
+        /// Имя до правки — для отката по Escape.
+        private var originalName: String?
+        /// Отмена по Escape тоже шлёт controlTextDidEndEditing; флаг гасит применение.
+        private var isCancelling = false
         /// Слепок показанного списка: перерисовываем только когда он реально изменился.
         /// Флаг metadataLoaded здесь обязателен — иначе догрузка размеров и дат
         /// не доедет до экрана, ведь состав списка при ней не меняется.
@@ -229,15 +245,41 @@ struct FileListView: NSViewRepresentable {
 
         // MARK: - Переименование
 
+        /// SwiftUI зовёт updateNSView на любое изменение модели, поэтому редактирование
+        /// запускается один раз на элемент: иначе повторный makeFirstResponder сбивал бы
+        /// курсор и выделение посреди набора имени.
         func beginRenamingIfNeeded() {
-            guard let renaming = renamingItem,
-                  let table,
-                  let row = model.items.firstIndex(where: { $0.url == renaming }),
-                  let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView,
+            guard let renaming = renamingItem, renaming != editingItem, let table else { return }
+            guard let row = model.items.firstIndex(where: { $0.url == renaming }) else { return }
+            table.scrollRowToVisible(row)
+            guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView,
                   let field = cell.textField
             else { return }
-            table.window?.makeFirstResponder(field)
+            editingItem = renaming
+            originalName = renaming.lastPathComponent
+            field.isEditable = true
+            guard table.window?.makeFirstResponder(field) == true else {
+                // Фокус не отдали — не оставляем поле в редактируемом состоянии.
+                field.isEditable = false
+                editingItem = nil
+                renamingItem = nil
+                return
+            }
             selectNameWithoutExtension(in: field, item: model.items[row])
+        }
+
+        /// Координатор живёт дольше структуры FileListView, поэтому биндинг нужно
+        /// обновлять: сохранённый от первого рендера ведёт в отработавший экземпляр,
+        /// и запись в него не доходит до @State владельца.
+        func rebind(renamingItem: Binding<URL?>) {
+            self._renamingItem = renamingItem
+        }
+
+        /// Возвращает поле в состояние обычной подписи после конца редактирования.
+        private func finishEditing(_ field: NSTextField) {
+            field.isEditable = false
+            editingItem = nil
+            originalName = nil
         }
 
         /// При переименовании выделяется только имя без расширения — как в проводнике.
@@ -247,13 +289,40 @@ struct FileListView: NSViewRepresentable {
             field.currentEditor()?.selectedRange = NSRange(location: 0, length: stem.count)
         }
 
+        /// Escape отменяет правку: возвращаем исходное имя и снимаем фокус,
+        /// иначе NSTextField завершил бы ввод и имя применилось бы.
+        func control(
+            _ control: NSControl,
+            textView: NSTextView,
+            doCommandBy commandSelector: Selector
+        ) -> Bool {
+            guard commandSelector == #selector(NSResponder.cancelOperation(_:)),
+                  let field = control as? NSTextField,
+                  let original = originalName
+            else { return false }
+            isCancelling = true
+            field.stringValue = original
+            renamingItem = nil
+            finishEditing(field)
+            table?.window?.makeFirstResponder(table)
+            isCancelling = false
+            return true
+        }
+
         func controlTextDidEndEditing(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField,
-                  let renaming = renamingItem
-            else { return }
-            defer { renamingItem = nil }
+            guard let field = notification.object as? NSTextField, !isCancelling else { return }
+            guard let renaming = renamingItem else {
+                finishEditing(field)
+                return
+            }
             let newName = field.stringValue
-            guard newName != renaming.lastPathComponent else { return }
+            renamingItem = nil
+            finishEditing(field)
+            guard !newName.isEmpty, newName != renaming.lastPathComponent else {
+                // Пустое или неизменённое имя — откатываем текст ячейки.
+                field.stringValue = renaming.lastPathComponent
+                return
+            }
             model.rename(renaming, to: newName)
         }
 
