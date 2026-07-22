@@ -7,13 +7,16 @@ struct MainWindow: View {
     @State private var showConnectServer = false
     @State private var connection = ServerConnection()
     @State private var connectModel: ConnectServerModel
+    /// Сервис обновлений приходит из App: тот же экземпляр видит пункт меню.
+    let updates: UpdateService
     /// Панель живёт в AppState: до неё должны дотягиваться команды главного меню.
     private var model: BrowserModel { appState.browser }
     /// Избранное берётся из общего AppState, чтобы сайдбар и список файлов
     /// меняли один и тот же список.
     private var actions: FolderActions { appState.folderActions }
 
-    init() {
+    init(updates: UpdateService) {
+        self.updates = updates
         // Диалог и сайдбар должны видеть одно состояние подключений.
         let connection = ServerConnection()
         _connection = State(initialValue: connection)
@@ -57,6 +60,11 @@ struct MainWindow: View {
                 ClickCatcher { NSApp.keyWindow?.makeFirstResponder(nil) }
             }
         }
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                UpdateBadgeView(service: updates)
+            }
+        }
         .onAppear {
             model.showHiddenFiles = appState.showHiddenFiles
             model.reloadAsync()
@@ -68,6 +76,10 @@ struct MainWindow: View {
             connectModel.onSettingsSaved = { showConnectServer = false }
             // Том могли отключить мимо нас, пока окно было закрыто.
             connection.mounted.refresh()
+            // Бандл предыдущей версии больше не нужен: раз мы выполняемся,
+            // обновление удалось.
+            BundleUpdateInstaller.cleanUpAfterUpdate()
+            Task { await updates.checkAutomatically() }
         }
         // Тома подключают и отключают в Finder, не выходя из Pathway, —
         // при возврате в приложение список нужно перечитать.

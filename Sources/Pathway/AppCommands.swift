@@ -5,8 +5,17 @@ import SwiftUI
 /// заголовок, иконка, шорткат и доступность описаны ровно в одном месте.
 struct AppCommands: Commands {
     let state: AppState
+    let updates: UpdateService
 
     var body: some Commands {
+        // Рядом с «О программе» — там этот пункт ищут по традиции macOS.
+        // Шорткат не нужен: проверка обновлений не входит в частый обиход.
+        CommandGroup(after: .appInfo) {
+            Button("Проверить обновления…") {
+                Task { await updates.checkManually() }
+            }
+        }
+
         CommandGroup(replacing: .newItem) {
             item(.newFolder)
             Divider()
