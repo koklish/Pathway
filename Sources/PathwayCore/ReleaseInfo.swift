@@ -51,14 +51,18 @@ public struct GitHubReleaseFetcher: ReleaseFetching {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { return nil }
         // 404 — релизов ещё нет: это нормальное состояние свежего репозитория,
-        // а не ошибка, о которой стоит говорить пользователю.
-        guard http.statusCode == 200 else { return nil }
+        // а не ошибка, о которой стоит говорить пользователю. Остальные не-200
+        // (403 — лимит запросов, 5xx — сбой на стороне GitHub) — это уже
+        // ошибка: молчаливое «релизов нет» превратило бы её в ложное
+        // «обновлений нет» при ручной проверке.
+        guard http.statusCode != 404 else { return nil }
+        guard http.statusCode == 200 else { throw ReleaseCheckError(statusCode: http.statusCode) }
 
-        return Self.parse(data)
+        return try Self.parse(data)
     }
 
     /// Разбирает ответ GitHub. Отделено от запроса, чтобы проверять без сети.
-    static func parse(_ data: Data) -> ReleaseInfo? {
+    static func parse(_ data: Data) throws -> ReleaseInfo? {
         struct Payload: Decodable {
             let tagName: String
             let body: String?
@@ -70,12 +74,35 @@ public struct GitHubReleaseFetcher: ReleaseFetching {
                 let name: String
                 let browserDownloadURL: URL
                 let size: Int64
+
+                enum CodingKeys: String, CodingKey {
+                    case name
+                    case browserDownloadURL = "browser_download_url"
+                    case size
+                }
+            }
+
+            enum CodingKeys: String, CodingKey {
+                case tagName = "tag_name"
+                case body
+                case draft
+                case prerelease
+                case assets
             }
         }
 
+        // Явные CodingKeys, а не .convertFromSnakeCase: стратегия конвертирует
+        // browser_download_url в browserDownloadUrl (строчные "rl" — аббревиатуры
+        // она не распознаёт), а свойство названо browserDownloadURL — ключи не
+        // совпадали, decode падал с keyNotFound, и parse молча возвращал nil на
+        // настоящем ответе GitHub. Явные ключи сверяются с документацией API
+        // глазом и не ломаются от подобных несовпадений регистра.
+        // Статус 200, но тело не разобралось — это не «релизов нет», а поломка
+        // формата ответа (GitHub сменил схему?). decode бросает сам — ошибку
+        // пробрасываем наверх, а не глотаем в nil, иначе такой сбой выглядел
+        // бы для пользователя как «обновлений нет».
         let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        guard let payload = try? decoder.decode(Payload.self, from: data) else { return nil }
+        let payload = try decoder.decode(Payload.self, from: data)
         // Черновики и предрелизы коллегам не раздаём: их видно только владельцу
         // репозитория, и обновляться на них никто не просил.
         guard !payload.draft, !payload.prerelease else { return nil }
@@ -89,5 +116,22 @@ public struct GitHubReleaseFetcher: ReleaseFetching {
             notes: payload.body ?? "",
             size: asset.size
         )
+    }
+}
+
+/// Не удалось спросить GitHub о релизах.
+public struct ReleaseCheckError: LocalizedError {
+    public let statusCode: Int
+
+    public init(statusCode: Int) {
+        self.statusCode = statusCode
+    }
+
+    public var errorDescription: String? {
+        // 403 у GitHub означает превышенный лимит запросов: без авторизации
+        // разрешено 60 обращений в час на адрес.
+        statusCode == 403
+            ? "GitHub временно ограничил число запросов. Попробуйте позже."
+            : "GitHub ответил ошибкой \(statusCode)."
     }
 }
