@@ -9,6 +9,14 @@ public enum UpdateError: LocalizedError {
     case notNewer
     case signatureInvalid
     case installFailed(String)
+    /// Подготовленный бандл пропал между `prepare()` и `launchInstaller()` — обычно
+    /// потому, что между «Скачано» и нажатием «Перезапустить» прошли часы, и macOS
+    /// успела почистить `TMPDIR`. Отдельный случай, а не `installFailed(String)`:
+    /// тексту нужно не констатировать поломку, а направить к действию — заново
+    /// проверить обновления, — и `restart()` в сервисе обязан отличить этот случай
+    /// от прочих, чтобы не подставлять в `.failed` старый релиз для повтора
+    /// загрузки (архива, на который он ссылался, тоже больше нет).
+    case preparedBundleMissing
 
     public var errorDescription: String? {
         switch self {
@@ -24,6 +32,8 @@ public enum UpdateError: LocalizedError {
             "Подпись загруженного приложения повреждена."
         case .installFailed(let reason):
             "Не удалось установить обновление: \(reason)"
+        case .preparedBundleMissing:
+            "Подготовленное обновление больше не на месте. Проверьте обновления заново."
         }
     }
 }
@@ -87,7 +97,28 @@ public struct BundleUpdateInstaller: UpdateInstalling {
     }
 
     public func launchInstaller(bundle: URL) throws {
+        // Проверка живёт здесь, а не в сервисе: между `prepare()` и нажатием
+        // «Перезапустить» может пройти сколько угодно часов, и это установщик
+        // отвечает за файловую систему, а не сервис состояний. Без неё скрипт
+        // стартовал бы на пропавший путь: переименовал бы установленный бандл в
+        // .old, ditto упал бы на несуществующий источник, сработал бы откат — и
+        // человек увидел бы просто откат без объяснения причины.
+        guard isValidBundle(at: bundle) else { throw UpdateError.preparedBundleMissing }
         try launchHelper(replacing: Bundle.main.bundleURL, with: bundle)
+    }
+
+    /// Не только «путь существует» — за часы простоя `TMPDIR` мог не только
+    /// исчезнуть, но и превратиться во что угодно (macOS чистит по своему
+    /// усмотрению, а на освободившееся место претендует кто попало). Бандл
+    /// macOS — это каталог с `Info.plist` и совпадающим `CFBundleIdentifier`:
+    /// то же самое условие, которым `verifiedBundle` признаёт содержимое
+    /// архива годным к установке, — здесь оно же служит проверкой сохранности.
+    private func isValidBundle(at url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else { return false }
+        return Bundle(url: url)?.bundleIdentifier == Bundle.main.bundleIdentifier
     }
 
     // MARK: - Проверка до подмены

@@ -520,6 +520,70 @@ struct UpdateServiceTests {
         #expect(terminator.terminateCount == 0)
     }
 
+    @Test("подготовленный бандл пропал между download() и restart() — ошибка вместо запуска скрипта")
+    @MainActor
+    func restartWithMissingPreparedBundleFailsWithoutLaunchingScript() async {
+        // Между «Скачано» и нажатием «Перезапустить» могут пройти часы: человек
+        // отложил перезапуск, ушёл на выходные, а macOS тем временем почистила
+        // TMPDIR. FakeInstaller.launchError воспроизводит именно то, что в этом
+        // случае обязан вернуть настоящий BundleUpdateInstaller.launchInstaller —
+        // preparedBundleMissing вместо попытки стартовать скрипт на путь, которого
+        // больше нет. Проверка самой файловой проверки (существование и что это
+        // бандл, а не мусор) — забота BundleUpdateInstaller и его собственного
+        // кода; здесь важно, что restart() не путает эту ошибку с прочими и не
+        // тащит за собой release для повтора загрузки архива, который тоже мог
+        // исчезнуть вместе с распакованным бандлом.
+        StubURLProtocol.data = Data(repeating: 0x41, count: 4096)
+        StubURLProtocol.headers = ["Content-Length": "4096"]
+        let installer = FakeInstaller()
+        installer.launchError = UpdateError.preparedBundleMissing
+        let terminator = FakeTerminator()
+        let service = makeService(
+            fetcher: FakeReleaseFetcher(release: makeRelease("1.1.0", size: 4096)),
+            installer: installer,
+            terminator: terminator,
+            session: StubURLProtocol.session()
+        )
+        await service.checkManually()
+        await service.download()
+
+        service.restart()
+
+        // Скрипт подмены пытался стартовать (launchInstaller вызван), но именно
+        // счётчик реального запуска процесса — terminateCount — обязан остаться
+        // нулевым: приложение не закрывается, пока некому подхватить подмену
+        // после закрытия.
+        #expect(installer.launchCount == 1)
+        #expect(terminator.terminateCount == 0)
+
+        guard case .failed(let message, let release) = service.state else {
+            Issue.record("ожидалось состояние .failed после пропажи подготовленного бандла, получено \(service.state)")
+            return
+        }
+        #expect(message == UpdateError.preparedBundleMissing.localizedDescription)
+        #expect(release == nil)
+    }
+
+    @Test("настоящий установщик отказывается запускать скрипт, если подготовленный бандл исчез")
+    func realInstallerRejectsMissingPreparedBundle() {
+        // Это и есть проверка самого дефекта на уровне файловой системы: путь,
+        // который якобы вело readyToRestart, ведёт в никуда — ровно то, что
+        // происходит после того, как macOS почистила TMPDIR за часы простоя.
+        // Без проверки в launchInstaller здесь бы стартовал скрипт: он
+        // переименовал бы установленный бандл в .old, упал бы на ditto с
+        // несуществующим источником и откатился — молча, без объяснения причины.
+        let installer = BundleUpdateInstaller()
+        let vanished = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PathwayUpdateTest-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("Проводник.app")
+
+        #expect {
+            try installer.launchInstaller(bundle: vanished)
+        } throws: { error in
+            (error as? UpdateError)?.errorDescription == UpdateError.preparedBundleMissing.errorDescription
+        }
+    }
+
     @Test("разбирает ответ GitHub")
     func parsesGitHubPayload() throws {
         let json = """
