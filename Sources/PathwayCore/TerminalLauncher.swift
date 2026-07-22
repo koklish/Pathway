@@ -13,7 +13,12 @@ public struct TerminalApp: Identifiable, Equatable, Sendable {
         /// В шаблонах «%@» заменяется на значение; shell не участвует, экранирование не нужно.
         case executable(path: String, workdirArgs: [String], commandArgs: [String])
         /// Управление через AppleScript: Terminal.app, iTerm2.
-        case appleScript(open: String, command: String)
+        ///
+        /// `openViaLaunchServices` включает обход для простого открытия папки:
+        /// Launch Services умеет отдать её терминалу напрямую, без Apple Events,
+        /// а значит и без запроса разрешения на автоматизацию. Для запуска
+        /// команды обхода нет — там AppleScript обязателен.
+        case appleScript(open: String, command: String, openViaLaunchServices: Bool = false)
     }
 
     public init(id: String, name: String, launch: LaunchMethod) {
@@ -43,6 +48,8 @@ public enum TerminalError: LocalizedError, Equatable {
 public protocol TerminalRunning {
     func run(executable: String, arguments: [String]) throws
     func runAppleScript(_ source: String) throws
+    /// Открывает папку в приложении средствами Launch Services.
+    func open(folder: URL, inAppWithBundleID bundleID: String) throws
 }
 
 /// Настоящий запуск: процесс или AppleScript.
@@ -59,6 +66,28 @@ public struct SystemTerminalRunner: TerminalRunning {
         } catch {
             throw TerminalError.launchFailed(
                 URL(fileURLWithPath: executable).lastPathComponent,
+                error.localizedDescription
+            )
+        }
+    }
+
+    /// Просит Launch Services открыть папку в указанном приложении.
+    ///
+    /// Терминалы трактуют переданную папку как рабочую и запускают в ней оболочку.
+    /// В отличие от AppleScript, здесь не задействованы Apple Events, поэтому
+    /// macOS не спрашивает разрешение на управление другим приложением.
+    public func open(folder: URL, inAppWithBundleID bundleID: String) throws {
+        guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+            throw TerminalError.launchFailed("Терминал", "Приложение не найдено в системе.")
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-a", app.path, folder.path]
+        do {
+            try process.run()
+        } catch {
+            throw TerminalError.launchFailed(
+                app.deletingPathExtension().lastPathComponent,
                 error.localizedDescription
             )
         }
@@ -137,7 +166,13 @@ public final class TerminalLauncher {
             }
             try runner.run(executable: path, arguments: arguments)
 
-        case let .appleScript(open, commandTemplate):
+        case let .appleScript(open, commandTemplate, viaLaunchServices):
+            // Открытие папки без команды обходится без Apple Events — это снимает
+            // запрос разрешения на автоматизацию в самом частом сценарии.
+            if command == nil, viaLaunchServices {
+                try runner.open(folder: folder, inAppWithBundleID: terminal.id)
+                return
+            }
             let template = command == nil ? open : commandTemplate
             var script = template.replacingOccurrences(
                 of: "%path%",
@@ -227,7 +262,8 @@ public extension TerminalApp {
                 activate
                 do script "%command%"
             end tell
-            """
+            """,
+            openViaLaunchServices: true
         )
     )
 
@@ -252,7 +288,8 @@ public extension TerminalApp {
                     write text "%command%"
                 end tell
             end tell
-            """
+            """,
+            openViaLaunchServices: true
         )
     )
 

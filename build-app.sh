@@ -33,7 +33,11 @@ cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 # Связки ключей) по идентичности подписи. Явный --identifier привязывает её к
 # bundle id вместо имени файла, поэтому пересобранная копия остаётся для системы
 # тем же приложением и не спрашивает подтверждений заново.
-codesign --force --sign - --identifier com.pathway.filemanager "$APP"
+#
+# Entitlements объявляют работу вне песочницы: без них система считает намерения
+# приложения неопределёнными и чаще переспрашивает про доступ к файлам.
+codesign --force --sign - --identifier com.pathway.filemanager \
+    --entitlements "$ROOT/Resources/Pathway.entitlements" "$APP"
 
 # Запущенную копию сначала закрываем — иначе замена бандла на живом процессе
 # оставит приложение в нерабочем состоянии.

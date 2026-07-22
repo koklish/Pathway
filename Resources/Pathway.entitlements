@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Файловый менеджер по смыслу работает со всей файловой системой, поэтому
+         песочница выключена: с ней доступ ограничивался бы папками, которые
+         пользователь выбрал вручную, и приложение не смогло бы показать дерево
+         каталогов. -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!-- Отладчик и профилировщик подключаются к неподписанной сборке только с
+         этим ключом. Для ad-hoc-подписи он безвреден: настоящую защиту даёт
+         подпись Developer ID, которой здесь нет. -->
+    <key>com.apple.security.get-task-allow</key>
+    <true/>
+
+    <!-- Запуск терминала и системных архиваторов (tar, zip, 7z) — дочерние
+         процессы без песочницы. -->
+    <key>com.apple.security.inherit</key>
+    <false/>
+</dict>
+</plist>

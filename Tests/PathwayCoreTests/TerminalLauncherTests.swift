@@ -139,12 +139,27 @@ struct TerminalLauncherTests {
         #expect(spy.arguments == ["--directory", folder.path, "claude"])
     }
 
+    /// Открытие папки в Терминале идёт через Launch Services, а не Apple Events:
+    /// это избавляет пользователя от запроса разрешения на автоматизацию.
+    @Test("открытие папки в Терминале обходится без AppleScript")
+    func opensFolderWithoutAppleEvents() throws {
+        let spy = LaunchSpy()
+        let launcher = TerminalLauncher(defaults: makeDefaults(), available: [.terminalApp], runner: spy)
+
+        try launcher.openTerminal(at: URL(fileURLWithPath: #"/tmp/a "b""#))
+
+        #expect(spy.script == nil)
+        #expect(spy.openedFolder?.path == #"/tmp/a "b""#)
+        #expect(spy.openedBundleID == "com.apple.Terminal")
+    }
+
+    /// Экранирование остаётся нужным для запуска команд — там AppleScript обязателен.
     @Test("AppleScript-терминал получает скрипт с экранированным путём")
     func buildsAppleScriptWithEscapedPath() throws {
         let spy = LaunchSpy()
         let launcher = TerminalLauncher(defaults: makeDefaults(), available: [.terminalApp], runner: spy)
 
-        try launcher.openTerminal(at: URL(fileURLWithPath: #"/tmp/a "b""#))
+        try launcher.runCommand("ls", at: URL(fileURLWithPath: #"/tmp/a "b""#))
 
         let script = try #require(spy.script)
         #expect(script.contains(#"\"b\""#))
@@ -204,6 +219,8 @@ private final class LaunchSpy: TerminalRunning {
     var executablePath: String?
     var arguments: [String]?
     var script: String?
+    var openedFolder: URL?
+    var openedBundleID: String?
     var error: (any Error)?
 
     func run(executable: String, arguments: [String]) throws {
@@ -214,6 +231,12 @@ private final class LaunchSpy: TerminalRunning {
 
     func runAppleScript(_ source: String) throws {
         script = source
+        if let error { throw error }
+    }
+
+    func open(folder: URL, inAppWithBundleID bundleID: String) throws {
+        openedFolder = folder
+        openedBundleID = bundleID
         if let error { throw error }
     }
 }
