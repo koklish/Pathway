@@ -22,6 +22,20 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     exit 1
 fi
 
+CURRENT_VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST")"
+# Понижение версии опубликуется без ошибки, но обновление не придёт никому:
+# и UpdateService, и UpdateInstaller требуют строго новее — а откатить уже
+# опубликованный релиз нельзя. Сравниваем через sort -V, а не строкой: строковое
+# сравнение поставило бы «1.10.0» перед «1.9.0» — та же ловушка, которую
+# AppVersion.swift разбирает почисленно по компонентам. BSD sort -V из macOS
+# (проверено: 2.3-Apple) на тройках X.Y.Z даёт тот же порядок, что и сравнение
+# AppVersion, поэтому здесь не нужен отдельный числовой разбор в bash.
+if [ "$CURRENT_VERSION" = "$VERSION" ] || \
+   [ "$(printf '%s\n%s\n' "$CURRENT_VERSION" "$VERSION" | sort -V | tail -1)" != "$VERSION" ]; then
+    echo "Версия $VERSION не выше текущей $CURRENT_VERSION." >&2
+    exit 1
+fi
+
 if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
     echo "Рабочее дерево не чистое. Закоммитьте или отложите изменения." >&2
     exit 1
@@ -93,7 +107,10 @@ trap cleanup_on_failure EXIT
 # Версия проставляется в Info.plist и в тег из одного значения: разойдись они,
 # коллеги получали бы предложение обновиться, уже стоя на новой версии.
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
-# CFBundleVersion должен расти монотонно — берём число коммитов.
+# CFBundleVersion — число коммитов; это не гарантированная монотонность, а
+# приближение: после rebase или squash счётчик может уменьшиться. Вреда от
+# этого нет — везде сравнение идёт по CFBundleShortVersionString выше, а
+# CFBundleVersion нигде не читается, — но полагаться на его рост нельзя.
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(git -C "$ROOT" rev-list --count HEAD)" "$PLIST"
 
 git -C "$ROOT" add "$PLIST"
@@ -148,6 +165,12 @@ if [ -n "$PREVIOUS_TAG" ]; then
     NOTES="$(git -C "$ROOT" log --pretty='- %s' "$PREVIOUS_TAG"..HEAD~1)"
 else
     NOTES="Первый выпуск."
+fi
+# Диапазон коммитов может оказаться пустым, если релиз выпускают сразу после
+# предыдущего без новых изменений: --notes "" не падает, но публикует релиз
+# с пустым описанием, будто про него забыли. Подставляем понятный запасной текст.
+if [ -z "$NOTES" ]; then
+    NOTES="Без изменений в коде со времени предыдущего релиза."
 fi
 
 echo "Публикую релиз…"
