@@ -2,53 +2,48 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>
-    <string>Проводник</string>
-    <key>CFBundleDisplayName</key>
-    <string>Проводник</string>
-    <!-- Идентификатор не трогаем: к нему привязаны сохранённые пароли серверов
-         в Связке ключей и закладки в UserDefaults. -->
-    <key>CFBundleIdentifier</key>
-    <string>com.pathway.filemanager</string>
-    <key>CFBundleExecutable</key>
-    <string>Pathway</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
-    <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>15.0</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSDesktopFolderUsageDescription</key>
-    <string>Проводник показывает содержимое Рабочего стола.</string>
-    <key>NSDocumentsFolderUsageDescription</key>
-    <string>Проводник показывает содержимое папки Документы.</string>
-    <key>NSDownloadsFolderUsageDescription</key>
-    <string>Проводник показывает содержимое папки Загрузки.</string>
-    <!-- Без этого ключа macOS молча отклонит запуск терминала через AppleScript. -->
-    <key>NSAppleEventsUsageDescription</key>
-    <string>Проводник открывает терминал в выбранной папке.</string>
-    <!-- Свой тип перетаскивания: отличает перестановку пунктов «Избранного»
-         от броска обычной папки. -->
-    <key>UTExportedTypeDeclarations</key>
-    <array>
-        <dict>
-            <key>UTTypeIdentifier</key>
-            <string>app.pathway.favorite</string>
-            <key>UTTypeDescription</key>
-            <string>Пункт избранного Проводника</string>
-            <key>UTTypeConformsTo</key>
-            <array>
-                <string>public.data</string>
-            </array>
-            <key>UTTypeTagSpecification</key>
-            <dict/>
-        </dict>
-    </array>
+	<key>CFBundleDisplayName</key>
+	<string>Проводник</string>
+	<key>CFBundleExecutable</key>
+	<string>Pathway</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.pathway.filemanager</string>
+	<key>CFBundleName</key>
+	<string>Проводник</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.1</string>
+	<key>CFBundleVersion</key>
+	<string>47</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Проводник открывает терминал в выбранной папке.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Проводник показывает содержимое Рабочего стола.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Проводник показывает содержимое папки Документы.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Проводник показывает содержимое папки Загрузки.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Пункт избранного Проводника</string>
+			<key>UTTypeIdentifier</key>
+			<string>app.pathway.favorite</string>
+			<key>UTTypeTagSpecification</key>
+			<dict/>
+		</dict>
+	</array>
 </dict>
 </plist>
