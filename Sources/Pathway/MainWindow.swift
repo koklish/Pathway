@@ -61,7 +61,11 @@ struct MainWindow: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .automatic) {
+            // .automatic отдаёт размещение системе, а она вправе положить
+            // элемент в секцию detail вместо правого угла строки заголовка —
+            // именно там значок версии должен быть виден всегда. .primaryAction
+            // это гарантирует.
+            ToolbarItem(placement: .primaryAction) {
                 UpdateBadgeView(service: updates)
             }
         }
@@ -76,10 +80,6 @@ struct MainWindow: View {
             connectModel.onSettingsSaved = { showConnectServer = false }
             // Том могли отключить мимо нас, пока окно было закрыто.
             connection.mounted.refresh()
-            // Бандл предыдущей версии больше не нужен: раз мы выполняемся,
-            // обновление удалось.
-            BundleUpdateInstaller.cleanUpAfterUpdate()
-            Task { await updates.checkAutomatically() }
         }
         // Тома подключают и отключают в Finder, не выходя из Pathway, —
         // при возврате в приложение список нужно перечитать.
