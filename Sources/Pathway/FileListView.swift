@@ -8,12 +8,16 @@ import UniformTypeIdentifiers
 struct FileListView: NSViewRepresentable {
     let model: BrowserModel
     let actions: FolderActions
+    let appState: AppState
     @Binding var renamingItem: URL?
     /// Открывает диалог архивации для выбранных элементов.
     let onCompress: ([FileItem]) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(model: model, actions: actions, renamingItem: $renamingItem, onCompress: onCompress)
+        Coordinator(
+            model: model, actions: actions, appState: appState,
+            renamingItem: $renamingItem, onCompress: onCompress
+        )
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -52,6 +56,7 @@ struct FileListView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.model = model
         context.coordinator.actions = actions
+        context.coordinator.appState = appState
         // Биндинг переприсваиваем на каждом обновлении: координатор создаётся один
         // раз и иначе навсегда сохранил бы биндинг от первого рендера, запись в
         // который не доходит до @State и не вызывает перерисовку.
@@ -140,6 +145,7 @@ struct FileListView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSMenuDelegate {
         var model: BrowserModel
         var actions: FolderActions
+        var appState: AppState
         weak var table: NSTableView?
         @Binding var renamingItem: URL?
         let onCompress: ([FileItem]) -> Void
@@ -173,11 +179,13 @@ struct FileListView: NSViewRepresentable {
         init(
             model: BrowserModel,
             actions: FolderActions,
+            appState: AppState,
             renamingItem: Binding<URL?>,
             onCompress: @escaping ([FileItem]) -> Void
         ) {
             self.model = model
             self.actions = actions
+            self.appState = appState
             self._renamingItem = renamingItem
             self.onCompress = onCompress
         }
@@ -265,6 +273,9 @@ struct FileListView: NSViewRepresentable {
                 renamingItem = nil
                 return
             }
+            // Пока идёт набор имени, F2 и ⌘⌫ не должны срабатывать как файловые
+            // команды: текстовое поле их не перехватывает, в отличие от ⌘C/⌘V.
+            appState.isEditingText = true
             selectNameWithoutExtension(in: field, item: model.items[row])
         }
 
@@ -276,10 +287,13 @@ struct FileListView: NSViewRepresentable {
         }
 
         /// Возвращает поле в состояние обычной подписи после конца редактирования.
+        /// Вызывается на всех путях завершения — Enter, Escape, потеря фокуса, —
+        /// поэтому здесь же снимается флаг ввода текста.
         private func finishEditing(_ field: NSTextField) {
             field.isEditable = false
             editingItem = nil
             originalName = nil
+            appState.isEditingText = false
         }
 
         /// При переименовании выделяется только имя без расширения — как в проводнике.
@@ -437,62 +451,78 @@ struct FileListView: NSViewRepresentable {
             let folder = terminalTarget
 
             if item != nil {
-                add(to: menu, "Открыть", #selector(menuOpen), MenuIcon.symbol("arrow.up.forward.app", .systemBlue))
+                add(to: menu, .open, #selector(menuOpen))
                 menu.addItem(.separator())
             }
 
-            add(to: menu, "Копировать", #selector(menuCopy), MenuIcon.symbol("document.on.document"))
-            add(to: menu, "Вырезать", #selector(menuCut), MenuIcon.symbol("scissors"))
-            add(to: menu, "Вставить", #selector(menuPaste), MenuIcon.symbol("clipboard"))
+            add(to: menu, .copy, #selector(menuCopy))
+            add(to: menu, .cut, #selector(menuCut))
+            add(to: menu, .paste, #selector(menuPaste))
             menu.addItem(.separator())
 
             if item != nil {
-                add(to: menu, "Переименовать", #selector(menuRename), MenuIcon.symbol("pencil"))
+                add(to: menu, .rename, #selector(menuRename))
             }
-            add(to: menu, "Новая папка", #selector(menuNewFolder), MenuIcon.symbol("folder.badge.plus", .systemBlue))
+            add(to: menu, .newFolder, #selector(menuNewFolder))
             menu.addItem(.separator())
 
             // Архивы: одна операция за раз, во время неё пункты неактивны
             // (пункт без action система выключает сама).
             if let item {
-                let busy = model.operationTitle != nil
+                let busy = model.isBusy
                 if !item.isDirectory && ArchiveService.isArchive(item.url) {
-                    add(to: menu, "Распаковать здесь",
-                        busy ? nil : #selector(menuExtractHere), MenuIcon.symbol("archivebox", .systemBlue))
-                    add(to: menu, "Распаковать в…",
-                        busy ? nil : #selector(menuExtractTo), MenuIcon.symbol("archivebox"))
+                    add(to: menu, .extractHere, busy ? nil : #selector(menuExtractHere))
+                    add(to: menu, .extractHere, busy ? nil : #selector(menuExtractTo), title: "Распаковать в…")
                 } else {
                     let targets = archiveTargets
-                    let title = targets.count > 1 ? "Архивировать \(targets.count) объектов…" : "Архивировать…"
-                    add(to: menu, title, busy ? nil : #selector(menuCompress), MenuIcon.symbol("archivebox"))
+                    let title = targets.count > 1 ? "Архивировать \(targets.count) объектов…" : nil
+                    add(to: menu, .compress, busy ? nil : #selector(menuCompress), title: title)
                 }
                 menu.addItem(.separator())
             }
 
             // Терминал открывается в кликнутой папке, а для файла или пустого
             // места — в текущей: пункт всегда осмыслен.
-            add(to: menu, "Открыть в Терминале", #selector(menuOpenTerminal), MenuIcon.symbol("terminal"))
+            add(to: menu, .openTerminal, #selector(menuOpenTerminal))
             if actions.isClaudeAvailable {
-                add(to: menu, "Открыть в Claude Code", #selector(menuOpenClaude), MenuIcon.claude)
+                add(to: menu, .openClaude, #selector(menuOpenClaude))
             }
             menu.addItem(.separator())
 
             let isFavorite = actions.isFavorite(folder)
-            let title = isFavorite ? "Убрать из избранного" : "Добавить в избранное"
-            let star = MenuIcon.symbol(isFavorite ? "star.slash" : "star", .systemYellow)
-            add(to: menu, title, #selector(menuToggleFavorite), star)
-            add(to: menu, "Показать в Finder", #selector(menuRevealInFinder), MenuIcon.symbol("macwindow"))
+            add(to: menu, .toggleFavorite, #selector(menuToggleFavorite),
+                title: isFavorite ? "Убрать из избранного" : "Добавить в избранное",
+                icon: MenuIcon.symbol(isFavorite ? "star.slash" : "star", .systemYellow))
+            add(to: menu, .revealInFinder, #selector(menuRevealInFinder))
 
             if item != nil {
                 menu.addItem(.separator())
-                add(to: menu, "Переместить в Корзину", #selector(menuMoveToTrash), MenuIcon.symbol("trash", .systemRed))
+                add(to: menu, .moveToTrash, #selector(menuMoveToTrash))
             }
         }
 
-        private func add(to menu: NSMenu, _ title: String, _ action: Selector?, _ icon: NSImage? = nil) {
-            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        /// Пункт контекстного меню из реестра команд: заголовок, иконка и
+        /// показанный шорткат берутся оттуда же, откуда их берёт главное меню,
+        /// поэтому разъехаться они не могут.
+        ///
+        /// Действие остаётся своим: контекстное меню работает от кликнутой
+        /// строки, а не от выделения, — это нативное поведение macOS.
+        private func add(
+            to menu: NSMenu,
+            _ id: CommandID,
+            _ action: Selector?,
+            title: String? = nil,
+            icon: NSImage? = nil
+        ) {
+            let command = CommandRegistry[id]
+            let item = NSMenuItem(
+                title: title ?? command.title,
+                action: action,
+                keyEquivalent: command.shortcut?.appKitKey ?? ""
+            )
+            item.keyEquivalentModifierMask = command.shortcut?.appKitModifiers ?? []
             item.target = self
-            item.image = icon
+            item.image = icon ?? command.menuImage
             menu.addItem(item)
         }
 

@@ -4,13 +4,11 @@ import SwiftUI
 /// Главное окно: сайдбар + адресная строка + список файлов + статус-бар.
 struct MainWindow: View {
     @Environment(AppState.self) private var appState
-    @State private var model = BrowserModel(path: FileManager.default.homeDirectoryForCurrentUser)
-    @State private var renamingItem: URL?
-    /// Элементы, для которых открыт диалог архивации; nil — диалог закрыт.
-    @State private var compressItems: [FileItem]?
     @State private var showConnectServer = false
     @State private var connection = ServerConnection()
     @State private var connectModel: ConnectServerModel
+    /// Панель живёт в AppState: до неё должны дотягиваться команды главного меню.
+    private var model: BrowserModel { appState.browser }
     /// Избранное берётся из общего AppState, чтобы сайдбар и список файлов
     /// меняли один и тот же список.
     private var actions: FolderActions { appState.folderActions }
@@ -23,7 +21,8 @@ struct MainWindow: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        @Bindable var state = appState
+        return NavigationSplitView {
             SidebarView(
                 model: model,
                 connection: connection,
@@ -42,8 +41,11 @@ struct MainWindow: View {
             VStack(spacing: 0) {
                 AddressBarView(model: model)
                 Divider()
-                FileListView(model: model, actions: actions, renamingItem: $renamingItem) { items in
-                    compressItems = items
+                FileListView(
+                    model: model, actions: actions, appState: appState,
+                    renamingItem: $state.pendingRename
+                ) { items in
+                    appState.pendingCompress = items
                 }
                 Divider()
                 StatusBarView(model: model)
@@ -72,14 +74,18 @@ struct MainWindow: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             connection.mounted.refresh()
         }
+        // Пока открыт диалог с полями ввода, файловые команды гасятся. Сброс
+        // висит на onDisappear, а не на кнопках: Esc закрывает лист мимо них.
         .sheet(isPresented: $showConnectServer) {
             ConnectServerView(model: connectModel) { showConnectServer = false }
+                .modalTextEditing(appState)
         }
         .sheet(isPresented: Binding(
-            get: { compressItems != nil }, set: { if !$0 { compressItems = nil } }
+            get: { appState.pendingCompress != nil }, set: { if !$0 { appState.pendingCompress = nil } }
         )) {
-            if let items = compressItems {
-                CompressDialogView(model: model, items: items) { compressItems = nil }
+            if let items = appState.pendingCompress {
+                CompressDialogView(model: model, items: items) { appState.pendingCompress = nil }
+                    .modalTextEditing(appState)
             }
         }
         // Распаковка наткнулась на зашифрованный архив — спрашиваем пароль.
@@ -88,6 +94,7 @@ struct MainWindow: View {
         )) {
             if let request = model.passwordRequest {
                 ExtractPasswordView(model: model, request: request)
+                    .modalTextEditing(appState)
             }
         }
         .onChange(of: appState.showHiddenFiles) { _, show in
@@ -110,5 +117,14 @@ struct MainWindow: View {
         } message: {
             Text(actions.errorMessage ?? "")
         }
+    }
+}
+
+private extension View {
+    /// Помечает модальный лист как «идёт ввод текста»: пока он открыт, F2,
+    /// ⌘⌫ и другие файловые команды не должны срабатывать под ним.
+    func modalTextEditing(_ state: AppState) -> some View {
+        onAppear { state.isEditingText = true }
+            .onDisappear { state.isEditingText = false }
     }
 }

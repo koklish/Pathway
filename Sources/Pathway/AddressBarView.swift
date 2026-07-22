@@ -5,6 +5,7 @@ import SwiftUI
 /// между хлебными крошками и вводом текста (как в Проводнике Windows).
 struct AddressBarView: View {
     let model: BrowserModel
+    @Environment(AppState.self) private var appState
 
     @State private var isEditing = false
     @State private var pathText = ""
@@ -18,26 +19,36 @@ struct AddressBarView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .onChange(of: model.pane.path) { _, _ in isEditing = false }
+        // Пока строка в режиме ввода, файловые команды гасятся: ⌘C должна
+        // копировать текст пути, а F2 и ⌘⌫ — не трогать выделенные файлы.
+        .onChange(of: isEditing) { _, editing in appState.isEditingText = editing }
+        .onDisappear { appState.isEditingText = false }
+        // ⌘L из главного меню: команда не может сама сфокусировать поле,
+        // поэтому выставляет запрос, а строка его исполняет.
+        .onChange(of: appState.pendingEditPath) { _, pending in
+            guard pending else { return }
+            beginEditing()
+            appState.pendingEditPath = false
+        }
     }
 
+    /// Шорткаты у кнопок не висят: привязанный к кнопке шорткат гаснет вместе
+    /// с её .disabled и не работает, когда фокус в списке файлов. Клавиши
+    /// приходят из главного меню, кнопки остаются мышиным дублем.
     private var navigationButtons: some View {
         HStack(spacing: 2) {
-            Button { model.pane.goBack(); model.reload() } label: { NavIcon("chevron.left") }
+            Button { model.goBack() } label: { NavIcon("chevron.left") }
                 .disabled(!model.pane.canGoBack)
-                .keyboardShortcut("[", modifiers: .command)
                 .help("Назад (⌘[)")
 
-            Button { model.pane.goForward(); model.reload() } label: { NavIcon("chevron.right") }
+            Button { model.goForward() } label: { NavIcon("chevron.right") }
                 .disabled(!model.pane.canGoForward)
-                .keyboardShortcut("]", modifiers: .command)
                 .help("Вперёд (⌘])")
 
-            Button { model.pane.goUp(); model.reload() } label: { NavIcon("chevron.up") }
-                .keyboardShortcut(.upArrow, modifiers: .command)
+            Button { model.goUp() } label: { NavIcon("chevron.up") }
                 .help("Вверх (⌘↑)")
 
-            Button { model.reload() } label: { NavIcon("arrow.clockwise") }
-                .keyboardShortcut("r", modifiers: .command)
+            Button { model.reloadAsync() } label: { NavIcon("arrow.clockwise") }
                 .help("Обновить (⌘R)")
         }
         .buttonStyle(.borderless)
@@ -58,12 +69,6 @@ struct AddressBarView: View {
         .padding(.vertical, 5)
         .frame(height: 30)
         .background(fieldBackground)
-        .background {
-            // ⌘L переводит строку в режим ввода, даже когда фокус в списке файлов.
-            Button("") { beginEditing() }
-                .keyboardShortcut("l", modifiers: .command)
-                .opacity(0)
-        }
     }
 
     private var fieldBackground: some View {

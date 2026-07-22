@@ -77,6 +77,40 @@ public final class BrowserModel {
         return text
     }
 
+    // MARK: - Контекст команд
+
+    /// Выделенные элементы в порядке показа. Команды работают с FileItem,
+    /// а pane.selection хранит только URL.
+    public var selectedItems: [FileItem] {
+        items.filter { pane.selection.contains($0.url) }
+    }
+
+    /// Объект, к которому относится команда: единственный выделенный элемент,
+    /// иначе — сама открытая папка.
+    public var commandTarget: URL {
+        pane.selection.count == 1 ? (pane.selection.first ?? pane.path) : pane.path
+    }
+
+    /// Папка для команд, которым нужна именно папка (Терминал, избранное):
+    /// выделенная папка либо текущая.
+    public var commandFolder: URL {
+        guard let item = selectedItems.first, selectedItems.count == 1, item.isDirectory else {
+            return pane.path
+        }
+        return item.url
+    }
+
+    public var canPaste: Bool {
+        !pasteboard.readURLs().isEmpty
+    }
+
+    /// Идёт операция с архивом — вторую начинать нельзя.
+    public var isBusy: Bool { operationTitle != nil }
+
+    public func selectAll() {
+        pane.selection = Set(items.map(\.url))
+    }
+
     // MARK: - Загрузка и навигация
 
     /// Синхронная загрузка — для тестов и файловых операций, где нужен готовый результат.
@@ -137,6 +171,21 @@ public final class BrowserModel {
 
     public func navigate(to url: URL) {
         pane.navigate(to: url)
+        reloadAsync()
+    }
+
+    public func goBack() {
+        pane.goBack()
+        reloadAsync()
+    }
+
+    public func goForward() {
+        pane.goForward()
+        reloadAsync()
+    }
+
+    public func goUp() {
+        pane.goUp()
         reloadAsync()
     }
 

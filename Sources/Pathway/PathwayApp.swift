@@ -13,7 +13,7 @@ struct PathwayApp: App {
         }
         .windowToolbarStyle(.unified)
         .commands {
-            CommandGroup(replacing: .newItem) {}
+            AppCommands(state: appState)
         }
     }
 }
