@@ -3,13 +3,21 @@ import Foundation
 import Observation
 
 /// Что показывает значок в строке заголовка.
+///
+/// У `.failed` второй параметр — релиз, на загрузке которого упали, а `nil` —
+/// упала именно проверка. Раньше этот релиз жил в отдельном приватном поле
+/// сервиса рядом с `state`, и два значения могли рассинхронизироваться:
+/// неудачная проверка не трогала поле, и `download()` после неё тихо повторял
+/// загрузку старого релиза вместо новой проверки GitHub. Перенос релиза внутрь
+/// самого случая делает такое рассогласование структурно невозможным — другого
+/// источника правды для «что качать при повторе» просто не существует.
 public enum UpdateState: Equatable, Sendable {
     case idle
     case checking
     case available(ReleaseInfo)
     case downloading(Double)
     case readyToRestart
-    case failed(String)
+    case failed(String, ReleaseInfo?)
 }
 
 /// Проверка и установка обновлений.
@@ -91,34 +99,33 @@ public final class UpdateService {
         } catch {
             // Нет сети — обычное дело, и само по себе не повод беспокоить человека.
             // Сказать стоит только тому, кто проверку и запросил.
-            state = silent ? .idle : .failed(error.localizedDescription)
+            // Второй параметр — nil: упала именно проверка, релиза для повтора
+            // загрузки нет и появиться ему неоткуда, кроме новой проверки.
+            state = silent ? .idle : .failed(error.localizedDescription, nil)
         }
     }
 
     // MARK: - Загрузка и установка
 
-    /// Релиз последней (неудавшейся) загрузки — чтобы `download()` можно было
-    /// повторить прямо из `.failed`, не гоняя пользователя через новую проверку
-    /// GitHub за тем же самым релизом, который уже известен.
-    private var lastAttemptedRelease: ReleaseInfo?
-
     /// Скачивает обновление и готовит подмену бандла.
     ///
-    /// Работает и из `.available` (первая попытка), и из `.failed` (повтор после
-    /// сбоя сети или установки) — второе намеренно: без него пользователю после
-    /// одной неудачной загрузки пришлось бы заново проходить проверку обновлений
-    /// ради того же самого релиза.
+    /// Работает и из `.available` (первая попытка), и из `.failed` с релизом
+    /// внутри (повтор после сбоя сети или установки) — второе намеренно: без
+    /// него пользователю после одной неудачной загрузки пришлось бы заново
+    /// проходить проверку обновлений ради того же самого релиза. Если же в
+    /// `.failed` релиза нет (упала проверка, а не загрузка), повторять нечего —
+    /// `download()` не имеет права угадывать релиз из ниоткуда, нужна новая
+    /// проверка GitHub.
     public func download() async {
         let release: ReleaseInfo
         switch state {
         case .available(let available):
             release = available
-        case .failed where lastAttemptedRelease != nil:
-            release = lastAttemptedRelease!
+        case .failed(_, .some(let previous)):
+            release = previous
         default:
             return
         }
-        lastAttemptedRelease = release
         state = .downloading(0)
 
         do {
@@ -126,7 +133,10 @@ public final class UpdateService {
             try installer.install(archive: archive)
             state = .readyToRestart
         } catch {
-            state = .failed(error.localizedDescription)
+            // Релиз — тот же самый, на котором упали: сохраняем его в состоянии,
+            // а не в отдельном поле, иначе следующая неудачная проверка не смогла
+            // бы его стереть и повтор загрузки взял бы устаревшие данные.
+            state = .failed(error.localizedDescription, release)
         }
     }
 

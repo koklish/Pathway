@@ -177,10 +177,12 @@ struct UpdateServiceTests {
 
         await service.checkManually()
 
-        guard case .failed = service.state else {
+        guard case .failed(_, let release) = service.state else {
             Issue.record("ожидалось состояние .failed, получено \(service.state)")
             return
         }
+        // Упала проверка, а не загрузка — релиза для повтора нет и быть не может.
+        #expect(release == nil)
     }
 
     @Test("повторный вызов проверки во время уже идущей не стартует второй запрос")
@@ -323,16 +325,72 @@ struct UpdateServiceTests {
         await service.checkManually()
 
         await service.download()
-        guard case .failed = service.state else {
+        guard case .failed(_, let release) = service.state else {
             Issue.record("ожидалось состояние .failed после сбоя установки, получено \(service.state)")
             return
         }
+        #expect(release == makeRelease("1.1.0", size: 4096))
 
         installer.error = nil
         await service.download()
 
         #expect(service.state == .readyToRestart)
         #expect(fetcher.callCount == 1)
+    }
+
+    @Test("после сбоя загрузки и сбоя повторной проверки повтор загрузки не ставит устаревший релиз")
+    @MainActor
+    func downloadAfterFailedRecheckDoesNotInstallStaleRelease() async {
+        // Воспроизводит дефект раздвоенного состояния: загрузка 1.1.0 падает,
+        // затем пользователь жмёт «проверить» и эта проверка тоже падает
+        // (сеть всё ещё недоступна) — на GitHub к этому моменту уже вышла 1.2.0.
+        // Со старой схемой (отдельное поле lastAttemptedRelease) неудачная
+        // проверка поле не трогала, и повторная загрузка молча ставила бы
+        // закэшированную 1.1.0 вместо похода за актуальным релизом. С релизом
+        // внутри .failed второй провал проверки обязан стереть 1.1.0 из
+        // состояния — иначе один источник правды перестаёт быть одним.
+        StubURLProtocol.data = Data(repeating: 0x41, count: 4096)
+        StubURLProtocol.headers = ["Content-Length": "4096"]
+        let installer = FakeInstaller()
+        installer.error = UpdateError.installFailed("тест")
+        let fetcher = FakeReleaseFetcher(release: makeRelease("1.1.0", size: 4096))
+        let service = makeService(
+            fetcher: fetcher,
+            installer: installer,
+            session: StubURLProtocol.session()
+        )
+        await service.checkManually()
+
+        await service.download()
+        guard case .failed(_, let releaseAfterDownloadFailure) = service.state else {
+            Issue.record("ожидалось состояние .failed после сбоя установки, получено \(service.state)")
+            return
+        }
+        #expect(releaseAfterDownloadFailure == makeRelease("1.1.0", size: 4096))
+
+        // Повторная проверка тоже проваливается — сети всё ещё нет.
+        fetcher.error = URLError(.notConnectedToInternet)
+        await service.checkManually()
+        guard case .failed(_, let releaseAfterCheckFailure) = service.state else {
+            Issue.record("ожидалось состояние .failed после сбоя повторной проверки, получено \(service.state)")
+            return
+        }
+        // Ключевая проверка: неудачная проверка обязана стереть старый релиз
+        // из состояния, а не оставить его висеть отдельно от текста ошибки.
+        #expect(releaseAfterCheckFailure == nil)
+
+        installer.error = nil
+        await service.download()
+
+        // Релиза для повтора нет — download() не имеет права угадывать его из
+        // старого состояния и обязан молча отказаться, а не поставить 1.1.0,
+        // которая к этому моменту уже могла устареть.
+        guard case .failed(_, let releaseAfterNoOpDownload) = service.state else {
+            Issue.record("download() без релиза в состоянии не должен ничего запускать, получено \(service.state)")
+            return
+        }
+        #expect(releaseAfterNoOpDownload == nil)
+        #expect(fetcher.callCount == 2)
     }
 
     @Test("разбирает ответ GitHub")
