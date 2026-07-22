@@ -67,15 +67,22 @@ public final class UpdateService {
     }
 
     private func check(silent: Bool) async {
-        // Пока идёт скачивание, проверять нечего — иначе состояние перетрётся.
+        // Пока идёт скачивание или проверка, проверять нечего — иначе состояние
+        // перетрётся, а повторный клик по «Проверить обновления» запустит
+        // параллельный запрос к GitHub с гонкой за финальный state.
+        if case .checking = state { return }
         if case .downloading = state { return }
         if case .readyToRestart = state { return }
 
         state = .checking
-        defaults.set(Date(), forKey: Self.lastCheckKey)
 
         do {
             let release = try await fetcher.latestRelease()
+            // Дата пишется только тут, после успешного ответа: неудачная
+            // проверка не должна засчитываться как состоявшаяся — иначе
+            // приложение, однажды не достучавшееся до сети, замолкало бы
+            // на сутки, хотя ни разу не проверило обновления по-настоящему.
+            defaults.set(Date(), forKey: Self.lastCheckKey)
             guard let release, release.version > currentVersion else {
                 state = .idle
                 return
@@ -90,9 +97,28 @@ public final class UpdateService {
 
     // MARK: - Загрузка и установка
 
+    /// Релиз последней (неудавшейся) загрузки — чтобы `download()` можно было
+    /// повторить прямо из `.failed`, не гоняя пользователя через новую проверку
+    /// GitHub за тем же самым релизом, который уже известен.
+    private var lastAttemptedRelease: ReleaseInfo?
+
     /// Скачивает обновление и готовит подмену бандла.
+    ///
+    /// Работает и из `.available` (первая попытка), и из `.failed` (повтор после
+    /// сбоя сети или установки) — второе намеренно: без него пользователю после
+    /// одной неудачной загрузки пришлось бы заново проходить проверку обновлений
+    /// ради того же самого релиза.
     public func download() async {
-        guard case .available(let release) = state else { return }
+        let release: ReleaseInfo
+        switch state {
+        case .available(let available):
+            release = available
+        case .failed where lastAttemptedRelease != nil:
+            release = lastAttemptedRelease!
+        default:
+            return
+        }
+        lastAttemptedRelease = release
         state = .downloading(0)
 
         do {
@@ -104,24 +130,18 @@ public final class UpdateService {
         }
     }
 
+    /// Размер чанка на запись: 64 КБ. `URLSession.AsyncBytes` отдаёт байты
+    /// только по одному — возобновление итератора на каждый байт неизбежно
+    /// при этом API, — но старый код вдобавок звал `Data.append` и держал
+    /// весь архив в памяти на каждый байт. Копим байты в чанк и одним вызовом
+    /// дописываем в файл через FileHandle: `append` вызывается тысячи раз, а
+    /// не миллионы, и в памяти живёт только текущий чанк, а не весь архив.
+    private static let chunkSize = 64 * 1024
+
     private func downloadArchive(_ release: ReleaseInfo) async throws -> URL {
         let (bytes, response) = try await session.bytes(from: release.archiveURL)
         let expected = response.expectedContentLength > 0
             ? response.expectedContentLength : release.size
-
-        var data = Data()
-        data.reserveCapacity(Int(expected))
-        var lastShown = 0.0
-        for try await byte in bytes {
-            data.append(byte)
-            let progress = Double(data.count) / Double(expected)
-            // Перерисовывать значок на каждый байт незачем: шаг в процент незаметен
-            // глазу, а обновление @Observable на каждой итерации стоит дорого.
-            if progress - lastShown >= 0.01 {
-                lastShown = progress
-                state = .downloading(min(progress, 1))
-            }
-        }
 
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PathwayUpdate", isDirectory: true)
@@ -129,8 +149,48 @@ public final class UpdateService {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
         let archive = directory.appendingPathComponent("update.zip")
-        try data.write(to: archive)
+        guard FileManager.default.createFile(atPath: archive.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let handle = try FileHandle(forWritingTo: archive)
+        defer { try? handle.close() }
+
+        var buffer = Data()
+        buffer.reserveCapacity(Self.chunkSize)
+        var written = 0
+        var lastShown = 0.0
+
+        for try await byte in bytes {
+            buffer.append(byte)
+            if buffer.count >= Self.chunkSize {
+                try handle.write(contentsOf: buffer)
+                written += buffer.count
+                buffer.removeAll(keepingCapacity: true)
+                reportProgress(written: written, expected: expected, lastShown: &lastShown)
+            }
+        }
+        if !buffer.isEmpty {
+            try handle.write(contentsOf: buffer)
+            written += buffer.count
+            reportProgress(written: written, expected: expected, lastShown: &lastShown)
+        }
+
         return archive
+    }
+
+    /// Обновляет `state` шагом примерно в процент — перерисовывать значок на
+    /// каждый чанк незачем: шаг незаметен глазу, а обновление @Observable на
+    /// каждой итерации стоит дорого.
+    private func reportProgress(written: Int, expected: Int64, lastShown: inout Double) {
+        // expected может быть 0 (сервер не прислал Content-Length, а размер
+        // релиза в ReleaseInfo не заполнен) — без защиты деление дало бы NaN,
+        // и .downloading(.nan) сломал бы отрисовку прогресс-бара.
+        guard expected > 0 else { return }
+        let progress = Double(written) / Double(expected)
+        if progress - lastShown >= 0.01 {
+            lastShown = progress
+            state = .downloading(min(progress, 1))
+        }
     }
 
     /// Закрывает приложение — дальше работает скрипт-помощник.
