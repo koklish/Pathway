@@ -736,7 +736,7 @@ struct UpdateServiceTests {
     }
 
     @Test("разбирает ответ GitHub")
-    func parsesGitHubPayload() {
+    func parsesGitHubPayload() throws {
         let json = """
         {
           "tag_name": "v1.5.0",
@@ -751,7 +751,7 @@ struct UpdateServiceTests {
         }
         """.data(using: .utf8)!
 
-        let release = GitHubReleaseFetcher.parse(json)
+        let release = try GitHubReleaseFetcher.parse(json)
 
         #expect(release?.version == AppVersion("1.5.0")!)
         #expect(release?.size == 2048)
@@ -759,7 +759,7 @@ struct UpdateServiceTests {
     }
 
     @Test("пропускает предрелиз")
-    func skipsPrerelease() {
+    func skipsPrerelease() throws {
         let json = """
         {
           "tag_name": "v2.0.0", "body": "", "draft": false, "prerelease": true,
@@ -767,17 +767,17 @@ struct UpdateServiceTests {
         }
         """.data(using: .utf8)!
 
-        #expect(GitHubReleaseFetcher.parse(json) == nil)
+        #expect(try GitHubReleaseFetcher.parse(json) == nil)
     }
 
     @Test("пропускает релиз без архива")
-    func skipsReleaseWithoutArchive() {
+    func skipsReleaseWithoutArchive() throws {
         // Обновляться нечем — ведём себя так, будто релиза нет.
         let json = """
         {"tag_name": "v2.0.0", "body": "", "draft": false, "prerelease": false, "assets": []}
         """.data(using: .utf8)!
 
-        #expect(GitHubReleaseFetcher.parse(json) == nil)
+        #expect(try GitHubReleaseFetcher.parse(json) == nil)
     }
 }
 ```
