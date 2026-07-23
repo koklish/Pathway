@@ -393,6 +393,7 @@ private struct BadgeChipHost<Chip: View, Popover: View>: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let host = NSHostingView(rootView: chip())
         host.translatesAutoresizingMaskIntoConstraints = false
+        context.coordinator.chipHost = host
 
         // Отдельный контейнер: жест кликаем по нему, а не по NSHostingView —
         // так область клика совпадает с капсулой целиком, включая её отступы.
@@ -412,9 +413,13 @@ private struct BadgeChipHost<Chip: View, Popover: View>: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        // Чип читает @Observable-сервис сам через SwiftUI внутри NSHostingView —
-        // отдельно обновлять его содержимое отсюда не нужно. Актуализируем лишь
-        // замыкания на случай, если SwiftUI пересоздал representable.
+        // Пересоздаём rootView чипа: NSHostingView, созданный раз в makeNSView,
+        // держит снимок дерева и сам за @Observable не следит — иначе точка
+        // «есть обновление» не появлялась бы, пока окно не перерисуют по другой
+        // причине. SwiftUI зовёт updateNSView на изменение наблюдаемого,
+        // прочитанного в representable (chip читает service), — здесь и
+        // подставляем свежее дерево.
+        (context.coordinator.chipHost as? NSHostingView<Chip>)?.rootView = chip()
         context.coordinator.popover = popover
         context.coordinator.onOpen = onOpen
     }
@@ -423,6 +428,10 @@ private struct BadgeChipHost<Chip: View, Popover: View>: NSViewRepresentable {
     final class Coordinator: NSObject, NSPopoverDelegate {
         var popover: () -> Popover
         var onOpen: () -> Void
+        /// NSHostingView чипа — держим, чтобы обновлять его rootView из
+        /// updateNSView. Тип стёрт до NSView: generic Chip в свойство класса
+        /// не пробросить без лишнего параметра, а привести обратно дёшево.
+        weak var chipHost: NSView?
         private var shown: NSPopover?
 
         init(popover: @escaping () -> Popover, onOpen: @escaping () -> Void) {
