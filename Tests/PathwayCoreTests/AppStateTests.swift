@@ -29,4 +29,14 @@ struct AppStateTests {
 
         #expect(!state.favorites.items.isEmpty)
     }
+
+    @Test("онбординг доступен через общее состояние и по умолчанию не идёт")
+    func exposesOnboarding() {
+        let suite = "appstate.tests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let state = AppState(onboarding: OnboardingModel(defaults: defaults))
+
+        #expect(!state.onboarding.isActive)
+    }
 }

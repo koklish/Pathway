@@ -13,6 +13,8 @@ public final class AppState {
     public let favorites: FavoritesStore
     /// Действия над папкой, общие для сайдбара и списка файлов.
     public let folderActions: FolderActions
+    /// Обучающий тур: первый запуск и повторный запуск кнопкой «?».
+    public let onboarding: OnboardingModel
     public var showHiddenFiles: Bool = false
 
     /// Идёт ввод текста — переименование, адресная строка или поле в диалоге.
@@ -36,10 +38,12 @@ public final class AppState {
     public init(
         path: URL = FileManager.default.homeDirectoryForCurrentUser,
         favorites: FavoritesStore = FavoritesStore(),
-        terminal: TerminalLauncher = TerminalLauncher()
+        terminal: TerminalLauncher = TerminalLauncher(),
+        onboarding: OnboardingModel = OnboardingModel()
     ) {
         self.browser = BrowserModel(path: path)
         self.favorites = favorites
         self.folderActions = FolderActions(favorites: favorites, terminal: terminal)
+        self.onboarding = onboarding
     }
 }
