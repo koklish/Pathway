@@ -79,13 +79,18 @@ struct MainWindow: View {
             .animation(.easeInOut(duration: 0.2), value: appState.onboarding.currentStep)
         }
         .toolbar {
-            // Кнопка «?» и значок версии — одна пара: оба объявлены с
-            // .sharedBackgroundVisibility(.hidden), чтобы капсулу каждый рисовал
-            // сам, без стеклянной подложки тулбара macOS 26 (иначе «?» получал
-            // бы стеклянный кружок, а версия — плоскую капсулу, и пара смотрелась
-            // бы разнородно). «?» объявлен раньше — в секции primaryAction встаёт
-            // левее версии. Под #available: target — macOS 15, где этого API нет.
+            // Кнопка серверов, «?» и значок версии — одна группа в правом углу:
+            // все с .sharedBackgroundVisibility(.hidden), чтобы капсулу рисовал
+            // каждый сам, без стеклянной подложки тулбара macOS 26 (иначе они
+            // смотрелись бы разнородно — часть кружком-стеклом, часть плоской
+            // капсулой). Порядок объявления = порядок слева направо в секции
+            // primaryAction: серверы, «?», версия. Под #available: target —
+            // macOS 15, где этого API нет.
             if #available(macOS 26, *) {
+                ToolbarItem(placement: .primaryAction) {
+                    serverMenuButton
+                }
+                .sharedBackgroundVisibility(.hidden)
                 ToolbarItem(placement: .primaryAction) {
                     HelpBadgeView { appState.onboarding.start() }
                 }
@@ -95,6 +100,9 @@ struct MainWindow: View {
                 }
                 .sharedBackgroundVisibility(.hidden)
             } else {
+                ToolbarItem(placement: .primaryAction) {
+                    serverMenuButton
+                }
                 ToolbarItem(placement: .primaryAction) {
                     HelpBadgeView { appState.onboarding.start() }
                 }
@@ -162,6 +170,42 @@ struct MainWindow: View {
             Button("ОК", role: .cancel) { actions.errorMessage = nil }
         } message: {
             Text(actions.errorMessage ?? "")
+        }
+    }
+
+    // MARK: - Кнопка серверов
+
+    /// Кнопка «Серверы» для тулбара. Держит те же connection/connectModel, что и
+    /// сайдбар, — состояние подключений у них общее.
+    private var serverMenuButton: some View {
+        ServerMenuButton(
+            connection: connection,
+            onNewConnection: {
+                connectModel.startNewConnection()
+                showConnectServer = true
+            },
+            onOpen: openServer
+        )
+    }
+
+    /// Переход к серверу из меню: смонтированный открываем сразу, иначе сначала
+    /// подключаем и переходим по успеху. Повторяет логику ServerRow в сайдбаре.
+    private func openServer(_ server: ServerAddress) {
+        if let point = connection.mounted.mountPoint(for: server) {
+            model.navigate(to: point)
+            return
+        }
+        Task {
+            switch await connection.connect(to: server) {
+            case .mounted(let point):
+                model.navigate(to: point)
+            case .needsCredentials:
+                // Учётных данных нет или устарели — открываем диалог на этом сервере.
+                connectModel.startEditing(server)
+                showConnectServer = true
+            case .failed(let message):
+                model.errorMessage = message
+            }
         }
     }
 }
