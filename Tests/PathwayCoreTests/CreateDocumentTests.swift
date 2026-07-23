@@ -6,7 +6,7 @@ import Testing
 struct CreateDocumentTests {
     private let template = DocumentTemplate(
         id: "docx", title: "Документ Word", defaultName: "Новый документ",
-        fileExtension: "docx", group: .microsoft, requiredApp: "com.microsoft.Word"
+        fileExtension: "docx", group: .microsoft
     )
 
     /// Кладёт заготовку во временную папку: настоящий бандл здесь не нужен,

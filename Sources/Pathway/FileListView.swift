@@ -596,21 +596,21 @@ struct FileListView: NSViewRepresentable {
             }
         }
 
-        /// Подменю «Создать»: папка и документы, которые есть чем открыть.
+        /// Подменю «Создать»: папка и документы.
         ///
         /// Строится из DocumentTemplates, а не из CommandRegistry: реестр
-        /// описывает команды с постоянным идентификатором, а список шаблонов
-        /// зависит от установленных приложений и потому переменной длины.
-        /// «Новая папка» остаётся командой реестра — у неё есть свой ⇧⌘N.
+        /// описывает команды с постоянным идентификатором, а шаблоны — это
+        /// данные, у которых своего CommandID нет. «Новая папка» остаётся
+        /// командой реестра — у неё есть свой ⇧⌘N.
         private func addCreateSubmenu(to menu: NSMenu) {
             let submenu = NSMenu()
             add(to: submenu, .newFolder, #selector(menuNewFolder), title: "Папка")
 
             let writable = !model.isReadOnlyVolume
             var lastGroup: TemplateGroup?
-            for template in DocumentTemplates.available(with: appState.appLookup) {
-                // Разделитель перед группой, а не после каждой: иначе на машине
-                // без Office в меню осталась бы висячая черта.
+            for template in DocumentTemplates.all {
+                // Разделитель перед группой, а не после каждой: иначе меню
+                // закрывала бы висячая черта.
                 if template.group != lastGroup {
                     submenu.addItem(.separator())
                     lastGroup = template.group

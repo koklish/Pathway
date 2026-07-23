@@ -7,7 +7,7 @@ import Testing
 struct BrowserCreateDocumentTests {
     private let template = DocumentTemplate(
         id: "txt", title: "Текстовый документ", defaultName: "Новый документ",
-        fileExtension: "txt", group: .basic, requiredApp: nil
+        fileExtension: "txt", group: .basic
     )
 
     @Test("создаёт документ в текущей папке и возвращает его адрес")
@@ -25,7 +25,7 @@ struct BrowserCreateDocumentTests {
         try withTempDir { dir in
             let missing = DocumentTemplate(
                 id: "нет-такого", title: "Не существует", defaultName: "Документ",
-                fileExtension: "xyz", group: .basic, requiredApp: nil
+                fileExtension: "xyz", group: .basic
             )
             let model = BrowserModel(path: dir)
             #expect(model.createDocument(missing) == nil)
