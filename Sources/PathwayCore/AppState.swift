@@ -15,6 +15,9 @@ public final class AppState {
     public let folderActions: FolderActions
     /// Обучающий тур: первый запуск и повторный запуск кнопкой «?».
     public let onboarding: OnboardingModel
+    /// Приложения, найденные при запуске: от них зависит состав подменю
+    /// «Создать». Опрос разовый — см. InstalledApps.
+    public let appLookup: any AppLookup
     public var showHiddenFiles: Bool = false
 
     /// Идёт ввод текста — переименование, адресная строка или поле в диалоге.
@@ -39,11 +42,13 @@ public final class AppState {
         path: URL = FileManager.default.homeDirectoryForCurrentUser,
         favorites: FavoritesStore = FavoritesStore(),
         terminal: TerminalLauncher = TerminalLauncher(),
-        onboarding: OnboardingModel = OnboardingModel()
+        onboarding: OnboardingModel = OnboardingModel(),
+        appLookup: any AppLookup = InstalledApps()
     ) {
         self.browser = BrowserModel(path: path)
         self.favorites = favorites
         self.folderActions = FolderActions(favorites: favorites, terminal: terminal)
         self.onboarding = onboarding
+        self.appLookup = appLookup
     }
 }

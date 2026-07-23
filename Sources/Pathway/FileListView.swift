@@ -511,7 +511,7 @@ struct FileListView: NSViewRepresentable {
             if item != nil {
                 add(to: menu, .rename, #selector(menuRename))
             }
-            add(to: menu, .newFolder, #selector(menuNewFolder))
+            addCreateSubmenu(to: menu)
             menu.addItem(.separator())
 
             // Архивы: одна операция за раз, во время неё пункты неактивны
@@ -547,6 +547,49 @@ struct FileListView: NSViewRepresentable {
                 menu.addItem(.separator())
                 add(to: menu, .moveToTrash, #selector(menuMoveToTrash))
             }
+        }
+
+        /// Подменю «Создать»: папка и документы, которые есть чем открыть.
+        ///
+        /// Строится из DocumentTemplates, а не из CommandRegistry: реестр
+        /// описывает команды с постоянным идентификатором, а список шаблонов
+        /// зависит от установленных приложений и потому переменной длины.
+        /// «Новая папка» остаётся командой реестра — у неё есть свой ⇧⌘N.
+        private func addCreateSubmenu(to menu: NSMenu) {
+            let submenu = NSMenu()
+            add(to: submenu, .newFolder, #selector(menuNewFolder), title: "Папка")
+
+            let writable = !model.isReadOnlyVolume
+            var lastGroup: TemplateGroup?
+            for template in DocumentTemplates.available(with: appState.appLookup) {
+                // Разделитель перед группой, а не после каждой: иначе на машине
+                // без Office в меню осталась бы висячая черта.
+                if template.group != lastGroup {
+                    submenu.addItem(.separator())
+                    lastGroup = template.group
+                }
+                let item = NSMenuItem(
+                    title: template.title,
+                    action: writable ? #selector(menuCreateDocument(_:)) : nil,
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = template
+                item.image = MenuIcon.document(extension: template.fileExtension)
+                submenu.addItem(item)
+            }
+
+            let parent = NSMenuItem(title: "Создать", action: nil, keyEquivalent: "")
+            parent.submenu = submenu
+            parent.image = MenuIcon.symbol("plus.square.on.square")
+            menu.addItem(parent)
+        }
+
+        @objc private func menuCreateDocument(_ sender: NSMenuItem) {
+            guard let template = sender.representedObject as? DocumentTemplate else { return }
+            // Новый файл сразу уходит в переименование — как «Новая папка» и как
+            // в проводнике: имя по умолчанию человеку почти всегда не нужно.
+            appState.pendingRename = model.createDocument(template)
         }
 
         /// Пункт контекстного меню из реестра команд: заголовок, иконка и

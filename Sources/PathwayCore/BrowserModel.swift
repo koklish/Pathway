@@ -307,6 +307,19 @@ public final class BrowserModel {
         run { try operations.createFolder(in: pane.path) }
     }
 
+    /// Возвращает адрес созданного документа, чтобы вью открыл на нём
+    /// инлайн-редактор; nil — операция не удалась, текст уже в errorMessage.
+    @discardableResult
+    public func createDocument(_ template: DocumentTemplate) -> URL? {
+        var created: URL?
+        run {
+            created = try operations.createDocument(
+                template, in: pane.path, templatesRoot: DocumentTemplates.templatesRoot
+            )
+        }
+        return created
+    }
+
     public func rename(_ url: URL, to newName: String) {
         run { _ = try operations.rename(url, to: newName) }
     }
@@ -468,6 +481,8 @@ public final class BrowserModel {
                 return "Недопустимое имя. Имя не может быть пустым или содержать «/» и «:»."
             case .nameAlreadyExists:
                 return "Объект с таким именем уже существует в этой папке."
+            case .templateMissing:
+                return "Заготовка документа отсутствует. Переустановите Проводник."
             }
         }
         let nsError = error as NSError

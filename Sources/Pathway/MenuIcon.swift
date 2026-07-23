@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 /// Иконки для пунктов контекстных меню.
 ///
@@ -29,6 +30,22 @@ enum MenuIcon {
         claudeCache = icon
         return icon
     }
+
+    /// Иконка документа по расширению — та же, что покажет Finder.
+    ///
+    /// Берём у системы, а не рисуем сами: иконка приходит от приложения,
+    /// которое откроет файл, и пункт «Документ Word» выглядит вордовским без
+    /// единого логотипа в репозитории. Кэш — потому что меню строится заново
+    /// на каждый правый клик.
+    static func document(extension ext: String) -> NSImage? {
+        if let cached = documentCache[ext] { return cached }
+        let icon = NSWorkspace.shared.icon(for: UTType(filenameExtension: ext) ?? .data)
+        icon.size = NSSize(width: 16, height: 16)
+        documentCache[ext] = icon
+        return icon
+    }
+
+    private static var documentCache: [String: NSImage] = [:]
 
     private static var claudeCache: NSImage?
 

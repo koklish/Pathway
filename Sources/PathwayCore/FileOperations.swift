@@ -10,6 +10,7 @@ public enum ConflictResolution: Sendable {
 public enum FileOperationError: Error, Equatable {
     case invalidName
     case nameAlreadyExists
+    case templateMissing
 }
 
 /// Операции с файлами: копирование, перемещение, удаление, переименование.
@@ -24,6 +25,27 @@ public struct FileOperations {
         let url = uniqueURL(in: directory, name: baseName)
         try fm.createDirectory(at: url, withIntermediateDirectories: false)
         return url
+    }
+
+    /// Создаёт документ копированием заготовки из бандла: так файл появляется
+    /// мгновенно и без запуска Word или Pages.
+    ///
+    /// `templatesRoot` передаётся параметром, а не берётся из Bundle.module
+    /// внутри: иначе операцию нельзя было бы проверить на временной папке.
+    public func createDocument(
+        _ template: DocumentTemplate,
+        in directory: URL,
+        templatesRoot: URL
+    ) throws -> URL {
+        let source = templatesRoot.appendingPathComponent(template.id)
+        guard fm.fileExists(atPath: source.path) else {
+            throw FileOperationError.templateMissing
+        }
+        let target = uniqueURL(
+            in: directory, name: template.defaultName, extension: template.fileExtension
+        )
+        try fm.copyItem(at: source, to: target)
+        return target
     }
 
     public func rename(_ url: URL, to newName: String) throws -> URL {
