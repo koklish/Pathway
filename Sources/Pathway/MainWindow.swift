@@ -79,31 +79,25 @@ struct MainWindow: View {
             .animation(.easeInOut(duration: 0.2), value: appState.onboarding.currentStep)
         }
         .toolbar {
-            // Кнопка «?» слева от чипа версии: объявлена раньше, поэтому в секции
-            // primaryAction встаёт левее. Запускает тур заново.
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    appState.onboarding.start()
-                } label: {
-                    Image(systemName: "questionmark.circle")
-                }
-                .help("Показать обучение")
-            }
-            // .automatic отдаёт размещение системе, а она вправе положить
-            // элемент в секцию detail вместо правого угла строки заголовка —
-            // именно там значок версии должен быть виден всегда. .primaryAction
-            // это гарантирует.
-            // macOS 26 кладёт под каждый элемент тулбара собственную стеклянную
-            // подложку (Liquid Glass) — и она просвечивала бледной капсулой
-            // вокруг нашей. .sharedBackgroundVisibility(.hidden) её прячет: чип
-            // рисует свой фон сам. Под #available, потому что target — macOS 15,
-            // где этого API ещё нет, да и подложки тулбара там не было.
+            // Кнопка «?» и значок версии — одна пара: оба объявлены с
+            // .sharedBackgroundVisibility(.hidden), чтобы капсулу каждый рисовал
+            // сам, без стеклянной подложки тулбара macOS 26 (иначе «?» получал
+            // бы стеклянный кружок, а версия — плоскую капсулу, и пара смотрелась
+            // бы разнородно). «?» объявлен раньше — в секции primaryAction встаёт
+            // левее версии. Под #available: target — macOS 15, где этого API нет.
             if #available(macOS 26, *) {
+                ToolbarItem(placement: .primaryAction) {
+                    HelpBadgeView { appState.onboarding.start() }
+                }
+                .sharedBackgroundVisibility(.hidden)
                 ToolbarItem(placement: .primaryAction) {
                     UpdateBadgeView(service: updates)
                 }
                 .sharedBackgroundVisibility(.hidden)
             } else {
+                ToolbarItem(placement: .primaryAction) {
+                    HelpBadgeView { appState.onboarding.start() }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     UpdateBadgeView(service: updates)
                 }
