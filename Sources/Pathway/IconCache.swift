@@ -12,13 +12,18 @@ enum IconCache {
     private static var byExtension: [String: NSImage] = [:]
     private static var folderIcon: NSImage?
 
+    /// Иконка папки. Нужна полосе вкладок, где элемент — путь, а не FileItem.
+    static var folder: NSImage {
+        if let cached = folderIcon { return cached }
+        let icon = NSWorkspace.shared.icon(for: .folder)
+        icon.size = NSSize(width: 16, height: 16)
+        folderIcon = icon
+        return icon
+    }
+
     static func icon(for item: FileItem) -> NSImage {
         if item.isDirectory {
-            if let cached = folderIcon { return cached }
-            let icon = NSWorkspace.shared.icon(for: .folder)
-            icon.size = NSSize(width: 16, height: 16)
-            folderIcon = icon
-            return icon
+            return folder
         }
 
         let ext = item.url.pathExtension.lowercased()

@@ -21,6 +21,23 @@ final class FileTableView: NSTableView {
     var onPaste: (() -> Void)?
     var onSelectAll: (() -> Void)?
     var canPaste: (() -> Bool)?
+    /// Средний клик по строке — открыть папку фоновой вкладкой.
+    var onMiddleClick: ((Int) -> Void)?
+
+    /// Средний клик обрабатывает сама таблица, а не делегат: otherMouseUp до
+    /// него не дойдёт — делегата нет в responder chain. Действие вешаем на
+    /// отпускание, а не на нажатие: так ведут себя браузеры, и промах мимо
+    /// строки при зажатой кнопке ничего не открывает.
+    override func otherMouseUp(with event: NSEvent) {
+        guard event.buttonNumber == 2 else {
+            super.otherMouseUp(with: event)
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        let clicked = row(at: point)
+        guard clicked >= 0 else { return }
+        onMiddleClick?(clicked)
+    }
 
     @objc func copy(_ sender: Any?) { onCopy?() }
     @objc func cut(_ sender: Any?) { onCut?() }
@@ -85,6 +102,11 @@ struct FileListView: NSViewRepresentable {
         table.onPaste = { [model] in model.paste() }
         table.onSelectAll = { [model] in model.selectAll() }
         table.canPaste = { [model] in model.canPaste && !model.isReadOnlyVolume }
+        // Через координатор, а не через захваченный appState: он обновляется в
+        // updateNSView и всегда указывает на актуальную вкладку.
+        table.onMiddleClick = { [coordinator = context.coordinator] row in
+            coordinator.openInBackgroundTab(row: row)
+        }
 
         for column in Column.allCases {
             let tableColumn = NSTableColumn(identifier: column.identifier)
@@ -288,7 +310,24 @@ struct FileListView: NSViewRepresentable {
 
         @objc func handleDoubleClick() {
             guard let table, table.clickedRow >= 0, table.clickedRow < model.items.count else { return }
-            model.open(model.items[table.clickedRow])
+            let item = model.items[table.clickedRow]
+            // ⌘-двойной клик по папке открывает её вкладкой — как ссылку в
+            // браузере. Одиночный ⌘-клик не трогаем: в NSTableView он
+            // добавляет строку к выделению, и это нативное поведение macOS.
+            if item.isDirectory, NSApp.currentEvent?.modifierFlags.contains(.command) == true {
+                appState.tabs.open(item.url, activate: false)
+                return
+            }
+            model.open(item)
+        }
+
+        /// Открывает папку вкладкой по среднему клику. Зовётся из FileTableView:
+        /// otherMouseUp до делегата не доходит — его нет в responder chain.
+        func openInBackgroundTab(row: Int) {
+            guard row >= 0, row < model.items.count else { return }
+            let item = model.items[row]
+            guard item.isDirectory else { return }
+            appState.tabs.open(item.url, activate: false)
         }
 
         // MARK: - Сортировка
@@ -498,8 +537,12 @@ struct FileListView: NSViewRepresentable {
             let item = clickedItem
             let folder = terminalTarget
 
-            if item != nil {
+            if let item {
                 add(to: menu, .open, #selector(menuOpen))
+                // Вкладкой открывается только папка: файл в ней показать нечем.
+                if item.isDirectory {
+                    add(to: menu, .openInNewTab, #selector(menuOpenInNewTab))
+                }
                 menu.addItem(.separator())
             }
 
@@ -688,6 +731,12 @@ struct FileListView: NSViewRepresentable {
         }
 
         @objc private func menuOpen() { clickedItem.map { model.open($0) } }
+        /// Открывает кликнутую папку вкладкой. Работает от clickedRow, как
+        /// остальные пункты этого меню, а не от выделения.
+        @objc private func menuOpenInNewTab() {
+            guard let item = clickedItem, item.isDirectory else { return }
+            appState.tabs.open(item.url, activate: true)
+        }
         @objc private func menuCopy() { model.copy() }
         @objc private func menuCut() { model.cut() }
         @objc private func menuPaste() { model.paste() }

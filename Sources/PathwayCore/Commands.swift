@@ -8,6 +8,7 @@ public enum ShortcutKey: Sendable, Equatable {
     case downArrow
     case delete
     case f2
+    case tab
 }
 
 public struct ShortcutModifiers: OptionSet, Sendable {
@@ -43,6 +44,8 @@ public enum CommandID: String, CaseIterable, Sendable {
     case toggleHiddenFiles, refresh
     // Переход
     case goBack, goForward, goUp, editPath, toggleFavorite
+    // Вкладки
+    case newTab, closeTab, nextTab, previousTab, openInNewTab
 }
 
 /// Команда приложения: единственное описание действия, из которого строятся
@@ -265,6 +268,57 @@ public enum CommandRegistry {
             icon: "star",
             isEnabled: { _ in true },
             run: { $0.folderActions.toggleFavorite($0.browser.commandFolder) }
+        ),
+
+        // MARK: Вкладки
+
+        AppCommand(
+            id: .newTab,
+            title: "Новая вкладка",
+            shortcut: Shortcut(.character("t"), .command),
+            icon: "plus.rectangle.on.rectangle",
+            isEnabled: { !$0.isEditingText },
+            run: { $0.tabs.open($0.browser.pane.path, activate: true) }
+        ),
+        AppCommand(
+            id: .closeTab,
+            title: "Закрыть вкладку",
+            shortcut: Shortcut(.character("w"), .command),
+            icon: "xmark",
+            // На единственной вкладке команда гаснет: у приложения одно окно, и
+            // закрыть его этим шорткатом значило бы оставить пользователя с
+            // пустым значком в Dock без очевидного способа вернуться.
+            isEnabled: { !$0.isEditingText && $0.tabs.canCloseActive },
+            run: { $0.tabs.closeActive() }
+        ),
+        AppCommand(
+            id: .nextTab,
+            title: "Следующая вкладка",
+            shortcut: Shortcut(.tab, .control),
+            icon: nil,
+            // При вводе текста не гасится, в отличие от создания и закрытия:
+            // переход на другую вкладку ничего не разрушает, а прервать им
+            // набор имени — законное желание.
+            isEnabled: { $0.tabs.tabs.count > 1 },
+            run: { $0.tabs.selectNext() }
+        ),
+        AppCommand(
+            id: .previousTab,
+            title: "Предыдущая вкладка",
+            shortcut: Shortcut(.tab, [.control, .shift]),
+            icon: nil,
+            isEnabled: { $0.tabs.tabs.count > 1 },
+            run: { $0.tabs.selectPrevious() }
+        ),
+        AppCommand(
+            id: .openInNewTab,
+            title: "Открыть в новой вкладке",
+            // Без шортката: пункт живёт только в контекстном меню и работает от
+            // clickedRow, а не от выделения — как остальные пункты этого меню.
+            shortcut: nil,
+            icon: "plus.rectangle.on.rectangle",
+            isEnabled: { !$0.isEditingText && $0.browser.commandFolder != $0.browser.pane.path },
+            run: { $0.tabs.open($0.browser.commandFolder, activate: true) }
         ),
     ]
 

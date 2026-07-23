@@ -1,15 +1,16 @@
 import Foundation
 import Observation
 
-/// Глобальное состояние приложения: панель, настройки и избранное.
+/// Глобальное состояние приложения: вкладки, настройки и избранное.
 ///
-/// Панель живёт здесь, а не во вью, потому что до неё должны дотягиваться
-/// команды главного меню: `.commands` строится в App и не видит @State окна.
-/// При переходе на две панели это свойство станет «активной панелью».
+/// Вкладки живут здесь, а не во вью, потому что до активной панели должны
+/// дотягиваться команды главного меню: `.commands` строится в App и не видит
+/// @State окна.
 @Observable
 @MainActor
 public final class AppState {
-    public let browser: BrowserModel
+    /// Открытые вкладки. Активная и есть панель, с которой работают команды.
+    public let tabs: TabsModel
     public let favorites: FavoritesStore
     /// Действия над папкой, общие для сайдбара и списка файлов.
     public let folderActions: FolderActions
@@ -18,7 +19,21 @@ public final class AppState {
     /// Приложения, найденные при запуске: от них зависит состав подменю
     /// «Создать». Опрос разовый — см. InstalledApps.
     public let appLookup: any AppLookup
-    public var showHiddenFiles: Bool = false
+
+    /// Активная вкладка. Свойство сохранено намеренно: до перехода на вкладки
+    /// здесь жила единственная панель, и весь реестр команд, сайдбар и список
+    /// файлов обращаются к модели через него. Замена на `tabs.active.browser`
+    /// в каждом месте ничего не улучшила бы, а правок потребовала бы в двух
+    /// десятках файлов.
+    public var browser: BrowserModel { tabs.active.browser }
+
+    /// Настройка приложения, а не папки: значение раздаётся всем вкладкам.
+    /// Хранится в TabsModel, чтобы не заводить второй источник правды —
+    /// вновь открытая вкладка должна получить текущее значение сама.
+    public var showHiddenFiles: Bool {
+        get { tabs.showHiddenFiles }
+        set { tabs.showHiddenFiles = newValue }
+    }
 
     /// Идёт ввод текста — переименование, адресная строка или поле в диалоге.
     /// Файловые команды на это время гасятся: F2, ⌘⌫ и ⌘⇧N текстовое поле
@@ -40,12 +55,13 @@ public final class AppState {
 
     public init(
         path: URL = FileManager.default.homeDirectoryForCurrentUser,
+        tabs: TabsModel? = nil,
         favorites: FavoritesStore = FavoritesStore(),
         terminal: TerminalLauncher = TerminalLauncher(),
         onboarding: OnboardingModel = OnboardingModel(),
         appLookup: any AppLookup = InstalledApps()
     ) {
-        self.browser = BrowserModel(path: path)
+        self.tabs = tabs ?? TabsModel(path: path)
         self.favorites = favorites
         self.folderActions = FolderActions(favorites: favorites, terminal: terminal)
         self.onboarding = onboarding

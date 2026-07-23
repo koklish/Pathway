@@ -43,6 +43,8 @@ struct MainWindow: View {
             .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 340)
         } detail: {
             VStack(spacing: 0) {
+                TabBarView(tabs: appState.tabs)
+                Divider()
                 AddressBarView(model: model)
                     .onboardingTarget(.addressBar)
                 Divider()
@@ -52,6 +54,11 @@ struct MainWindow: View {
                 ) { items in
                     appState.pendingCompress = items
                 }
+                // Своя таблица на вкладку. Без этого NSScrollView был бы один
+                // на всех, и переключение вкладок роняло бы позицию скролла в
+                // ту, что осталась от прошлой папки: скролл принадлежит вью,
+                // а не модели, и переприсваиванием model не восстанавливается.
+                .id(appState.tabs.active.id)
                 Divider()
                 StatusBarView(model: model)
             }
@@ -112,12 +119,15 @@ struct MainWindow: View {
             }
         }
         .onAppear {
-            model.showHiddenFiles = appState.showHiddenFiles
-            model.reloadAsync()
-            // Подключённый том сразу открываем в панели и закрываем диалог.
+            // Читает папку активной вкладки. Остальные — восстановленные из
+            // прошлой сессии — ждут своего показа: обходить каталоги всех
+            // сразу значило бы на сетевом диске десять обходов на старте.
+            appState.tabs.loadActive()
+            // Подключённый том открываем новой вкладкой, а не вместо текущей:
+            // папка, из которой пошли подключаться, должна остаться на месте.
             connectModel.onMounted = { mountPoint in
                 showConnectServer = false
-                model.navigate(to: mountPoint)
+                appState.tabs.open(mountPoint, activate: true)
             }
             connectModel.onSettingsSaved = { showConnectServer = false }
             // Том могли отключить мимо нас, пока окно было закрыто.
@@ -151,10 +161,9 @@ struct MainWindow: View {
                     .modalTextEditing(appState)
             }
         }
-        .onChange(of: appState.showHiddenFiles) { _, show in
-            model.showHiddenFiles = show
-            model.reloadAsync()
-        }
+        // Отдельного onChange для скрытых файлов больше нет: флаг живёт в
+        // TabsModel и сам раздаётся всем вкладкам с перечитыванием — иначе
+        // ⌘⇧. обновлял бы только ту вкладку, что сейчас на экране.
         .alert(
             "Не удалось выполнить операцию",
             isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })
@@ -192,13 +201,13 @@ struct MainWindow: View {
     /// подключаем и переходим по успеху. Повторяет логику ServerRow в сайдбаре.
     private func openServer(_ server: ServerAddress) {
         if let point = connection.mounted.mountPoint(for: server) {
-            model.navigate(to: point)
+            appState.tabs.open(point, activate: true)
             return
         }
         Task {
             switch await connection.connect(to: server) {
             case .mounted(let point):
-                model.navigate(to: point)
+                appState.tabs.open(point, activate: true)
             case .needsCredentials:
                 // Учётных данных нет или устарели — открываем диалог на этом сервере.
                 connectModel.startEditing(server)

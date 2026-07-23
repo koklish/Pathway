@@ -12,7 +12,10 @@ struct CommandsTests {
         let suite = "commands.tests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
-        return AppState(path: path, favorites: FavoritesStore(defaults: defaults))
+        // Своё хранилище вкладок: с общим тесты открыли бы сохранённую сессию
+        // пользователя вместо временной папки.
+        let tabs = TabsModel(path: path, store: TabsStore(defaults: defaults))
+        return AppState(tabs: tabs, favorites: FavoritesStore(defaults: defaults))
     }
 
     /// URL элемента из загруженного списка. Брать его из items обязательно:
@@ -174,6 +177,73 @@ struct CommandsTests {
             for id in [CommandID.moveToTrash, .rename, .newFolder, .open] {
                 #expect(!CommandRegistry[id].isEnabled(state), "\(id.rawValue) должна гаснуть при вводе текста")
             }
+        }
+    }
+
+    // MARK: - Вкладки
+
+    @Test("новая вкладка открывается на текущей папке")
+    func newTabOpensCurrentFolder() throws {
+        try withTempDir { dir in
+            let state = makeState(path: dir)
+
+            CommandRegistry[.newTab].run(state)
+
+            #expect(state.tabs.tabs.count == 2)
+            #expect(state.browser.pane.path == state.tabs.tabs[0].browser.pane.path)
+        }
+    }
+
+    @Test("закрытие вкладки недоступно, пока она одна")
+    func closeTabDisabledWithSingleTab() throws {
+        try withTempDir { dir in
+            let state = makeState(path: dir)
+
+            #expect(!CommandRegistry[.closeTab].isEnabled(state))
+
+            state.tabs.open(URL(fileURLWithPath: "/tmp"), activate: true)
+
+            #expect(CommandRegistry[.closeTab].isEnabled(state))
+        }
+    }
+
+    @Test("во время ввода текста вкладки не создаются и не закрываются")
+    func tabCommandsDisabledWhileEditingText() throws {
+        try withTempDir { dir in
+            let state = makeState(path: dir)
+            state.tabs.open(URL(fileURLWithPath: "/tmp"), activate: true)
+
+            state.isEditingText = true
+
+            #expect(!CommandRegistry[.newTab].isEnabled(state))
+            #expect(!CommandRegistry[.closeTab].isEnabled(state))
+        }
+    }
+
+    @Test("переключение вкладок работает и во время ввода текста, а не гасится")
+    func switchingTabsSurvivesTextEditing() throws {
+        try withTempDir { dir in
+            let state = makeState(path: dir)
+            state.tabs.open(URL(fileURLWithPath: "/tmp"), activate: true)
+            state.isEditingText = true
+
+            // Переход на другую вкладку ничего не разрушает — в отличие от
+            // создания и закрытия, он остаётся доступным.
+            #expect(CommandRegistry[.nextTab].isEnabled(state))
+
+            CommandRegistry[.nextTab].run(state)
+
+            #expect(state.tabs.activeIndex == 0)
+        }
+    }
+
+    @Test("переключение вкладок недоступно, пока вкладка одна")
+    func switchingDisabledWithSingleTab() throws {
+        try withTempDir { dir in
+            let state = makeState(path: dir)
+
+            #expect(!CommandRegistry[.nextTab].isEnabled(state))
+            #expect(!CommandRegistry[.previousTab].isEnabled(state))
         }
     }
 

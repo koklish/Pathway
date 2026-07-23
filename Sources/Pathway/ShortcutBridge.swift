@@ -14,6 +14,7 @@ extension Shortcut {
         // KeyEquivalent строится из символа Unicode; для функциональных клавиш
         // это приватная область, где живут NSF*FunctionKey.
         case .f2: KeyEquivalent(Character(UnicodeScalar(NSF2FunctionKey)!))
+        case .tab: KeyEquivalent(Character(UnicodeScalar(NSTabCharacter)!))
         }
     }
 
@@ -34,6 +35,7 @@ extension Shortcut {
         case .downArrow: String(UnicodeScalar(NSDownArrowFunctionKey)!)
         case .delete: String(UnicodeScalar(NSBackspaceCharacter)!)
         case .f2: String(UnicodeScalar(NSF2FunctionKey)!)
+        case .tab: String(UnicodeScalar(NSTabCharacter)!)
         }
     }
 
@@ -62,7 +64,7 @@ extension AppCommand {
     private var menuIconColor: NSColor {
         switch id {
         case .moveToTrash: .systemRed
-        case .newFolder, .open, .extractHere: .systemBlue
+        case .newFolder, .open, .extractHere, .newTab, .openInNewTab: .systemBlue
         case .toggleFavorite: .systemYellow
         default: .secondaryLabelColor
         }

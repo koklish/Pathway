@@ -384,8 +384,18 @@ struct FolderMenuItems: View {
     let folder: URL
     let actions: FolderActions
     let model: BrowserModel
+    /// Вкладки — из окружения: пункт нужен во всех меню сайдбара, а тянуть
+    /// параметр через FavoritesSection и TreeNode значило бы править пять
+    /// уровней вью ради одной кнопки.
+    @Environment(AppState.self) private var appState
 
     var body: some View {
+        Button {
+            appState.tabs.open(folder, activate: true)
+        } label: {
+            MenuLabel("Открыть в новой вкладке", symbol: "plus.rectangle.on.rectangle", color: .systemBlue)
+        }
+        Divider()
         Button {
             actions.openTerminal(at: folder)
         } label: {

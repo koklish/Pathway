@@ -168,6 +168,9 @@ private struct ServerRow: View {
     let onRemove: () -> Void
     let onError: (String) -> Void
 
+    /// Вкладки — из окружения: пробрасывать их параметром пришлось бы через
+    /// NetworkSection и ServerNode ради одного вызова.
+    @Environment(AppState.self) private var appState
     @State private var isHovering = false
     /// Пункт «Забыть пароль» скрыт, если пароль уже забыли в этом же меню.
     ///
@@ -311,9 +314,11 @@ private struct ServerRow: View {
         }
     }
 
+    /// Сервер открывается новой вкладкой, а не вместо текущей: папка, из
+    /// которой пошли к серверу, должна остаться под рукой.
     private func openMountPoint() {
         guard let point = connection.mounted.mountPoint(for: server) else { return }
-        model.navigate(to: point)
+        appState.tabs.open(point, activate: true)
     }
 
     private func connect() {
@@ -321,7 +326,7 @@ private struct ServerRow: View {
             let outcome = await connection.connect(to: server)
             switch outcome {
             case .mounted(let point):
-                model.navigate(to: point)
+                appState.tabs.open(point, activate: true)
             case .failed(let message):
                 onError(message)
             case .needsCredentials:

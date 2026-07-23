@@ -17,6 +17,9 @@ struct AppCommands: Commands {
         }
 
         CommandGroup(replacing: .newItem) {
+            item(.newTab)
+            item(.closeTab)
+            Divider()
             item(.newFolder)
             Divider()
             item(.open)
@@ -57,6 +60,9 @@ struct AppCommands: Commands {
             item(.goUp)
             Divider()
             item(.editPath)
+            Divider()
+            item(.nextTab)
+            item(.previousTab)
             Divider()
             item(.toggleFavorite)
         }

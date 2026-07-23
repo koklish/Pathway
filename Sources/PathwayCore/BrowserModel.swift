@@ -43,6 +43,15 @@ public final class BrowserModel {
     /// настоящего тома, монтировать который они не могут.
     public internal(set) var isReadOnlyVolume = false
 
+    /// Папка панели сменилась. Вкладки сохраняют по нему сессию: путь меняется
+    /// внутри модели, и заметить это снаружи иначе нечем — наблюдать за pane.path
+    /// из TabsModel значило бы держать по подписке на каждую вкладку.
+    ///
+    /// Не @Observable-свойство, а замыкание: вызов должен случиться сразу, а не
+    /// на следующем проходе рендера, иначе закрытие приложения между сменой
+    /// папки и отрисовкой потеряло бы последний путь.
+    var didChangeFolder: (() -> Void)?
+
     private let loader = DirectoryLoader()
     private let operations = FileOperations()
     private let archiver = ArchiveService()
@@ -195,21 +204,25 @@ public final class BrowserModel {
 
     public func navigate(to url: URL) {
         pane.navigate(to: url)
+        didChangeFolder?()
         reloadAsync()
     }
 
     public func goBack() {
         pane.goBack()
+        didChangeFolder?()
         reloadAsync()
     }
 
     public func goForward() {
         pane.goForward()
+        didChangeFolder?()
         reloadAsync()
     }
 
     public func goUp() {
         pane.goUp()
+        didChangeFolder?()
         reloadAsync()
     }
 
@@ -217,6 +230,14 @@ public final class BrowserModel {
     /// которому важен готовый список сразу после перехода.
     public func waitForLoad() async {
         await loadTask?.value
+    }
+
+    /// Снимает незавершённое чтение папки. Зовётся при закрытии вкладки:
+    /// loadTask держит модель сильной ссылкой через захват в замыкании, и
+    /// чтение медленной сетевой папки продержало бы закрытую вкладку в
+    /// памяти до своего конца.
+    public func cancelLoad() {
+        loadTask?.cancel()
     }
 
     public func open(_ item: FileItem) {
