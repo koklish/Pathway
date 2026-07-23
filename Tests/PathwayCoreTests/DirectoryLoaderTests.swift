@@ -39,6 +39,20 @@ struct DirectoryLoaderTests {
         }
     }
 
+    /// Перевод стандартных папок опознаёт полный путь, а не имя: папка Desktop
+    /// внутри проекта должна остаться Desktop, иначе список показывал бы чужое имя.
+    @Test("папку с системным именем в обычном каталоге не переводит")
+    func keepsOrdinaryFolderNames() throws {
+        try withTempDir { dir in
+            try FileManager.default.createDirectory(at: dir.appendingPathComponent("Desktop"), withIntermediateDirectories: false)
+            try FileManager.default.createDirectory(at: dir.appendingPathComponent("Documents"), withIntermediateDirectories: false)
+
+            let items = try DirectoryLoader().load(directory: dir)
+
+            #expect(items.map(\.name) == ["Desktop", "Documents"])
+        }
+    }
+
     @Test("по умолчанию скрывает файлы, начинающиеся с точки")
     func hidesDotFilesByDefault() throws {
         try withTempDir { dir in

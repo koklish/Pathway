@@ -56,7 +56,11 @@ public struct DirectoryLoader: Sendable {
             // так помечены, например, временные файлы Word (~$_имя.docx).
             if !showHidden, Self.isHiddenByFlag(url) { continue }
 
-            items.append(FileItem(url: url, name: name, isDirectory: isDirectory, metadataLoaded: false))
+            // Стандартные папки показываются по-русски, как в Finder. Словарь, а не
+            // опрос системы: displayName стоил бы сотен миллисекунд на каталог.
+            let displayName = isDirectory ? (SystemFolderNames.localizedName(for: url) ?? name) : name
+
+            items.append(FileItem(url: url, name: displayName, isDirectory: isDirectory, metadataLoaded: false))
         }
         return Self.sortedByName(items)
     }
@@ -98,7 +102,7 @@ public struct DirectoryLoader: Sendable {
         let values = try? url.resourceValues(forKeys: Set(keys))
         return FileItem(
             url: url,
-            name: url.lastPathComponent,
+            name: SystemFolderNames.displayName(for: url),
             isDirectory: values?.isDirectory ?? false,
             size: Int64(values?.fileSize ?? 0),
             modificationDate: values?.contentModificationDate,

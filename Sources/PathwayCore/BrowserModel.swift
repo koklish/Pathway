@@ -94,15 +94,14 @@ public final class BrowserModel {
         for component in pane.path.pathComponents.dropFirst() {
             accumulated += "/" + component
             let url = URL(fileURLWithPath: accumulated)
-            crumbs.append(Breadcrumb(url: url, name: Self.displayName(for: url, component: component)))
+            crumbs.append(Breadcrumb(url: url, name: Self.displayName(for: url)))
         }
         return crumbs
     }
 
     /// Имя сегмента так, как его показывает Finder: локализованное, если система его переводит.
-    private static func displayName(for url: URL, component: String) -> String {
-        let localized = FileManager.default.displayName(atPath: url.path)
-        return localized.isEmpty ? component : localized
+    private static func displayName(for url: URL) -> String {
+        SystemFolderNames.displayNameAskingSystem(for: url)
     }
 
     public var statusText: String {

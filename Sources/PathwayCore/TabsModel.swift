@@ -26,8 +26,7 @@ public final class TabState: Identifiable {
     public var title: String {
         let path = browser.pane.path
         guard path.path != "/" else { return "Этот Мас" }
-        let localized = FileManager.default.displayName(atPath: path.path)
-        return localized.isEmpty ? path.lastPathComponent : localized
+        return SystemFolderNames.displayNameAskingSystem(for: path)
     }
 }
 

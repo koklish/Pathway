@@ -15,8 +15,7 @@ public struct Favorite: Identifiable, Equatable, Hashable, Sendable, Codable {
 
     /// Имя так, как его показывает Finder: локализованное, если система его переводит.
     static func defaultName(for url: URL) -> String {
-        let localized = FileManager.default.displayName(atPath: url.path)
-        return localized.isEmpty ? url.lastPathComponent : localized
+        return SystemFolderNames.displayNameAskingSystem(for: url)
     }
 }
 
