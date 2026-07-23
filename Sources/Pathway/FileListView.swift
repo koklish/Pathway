@@ -363,6 +363,9 @@ struct FileListView: NSViewRepresentable {
             // Пока идёт набор имени, F2 и ⌘⌫ не должны срабатывать как файловые
             // команды: текстовое поле их не перехватывает, в отличие от ⌘C/⌘V.
             appState.isEditingText = true
+            // Внешнее обновление списка перезагружает таблицу и уводит фокус
+            // из поля — набранное имя пропало бы под руками.
+            model.isRenaming = true
             selectNameWithoutExtension(in: field, item: model.items[row])
         }
 
@@ -381,6 +384,7 @@ struct FileListView: NSViewRepresentable {
             editingItem = nil
             originalName = nil
             appState.isEditingText = false
+            model.isRenaming = false
         }
 
         /// При переименовании выделяется только имя без расширения — как в проводнике.

@@ -16,8 +16,8 @@ public final class TabState: Identifiable {
     /// обходила бы каталог заново на каждое переключение.
     public internal(set) var hasLoaded = false
 
-    init(path: URL, showHiddenFiles: Bool) {
-        browser = BrowserModel(path: path)
+    init(path: URL, showHiddenFiles: Bool, watcher: any DirectoryWatching) {
+        browser = BrowserModel(path: path, watcher: watcher)
         browser.showHiddenFiles = showHiddenFiles
     }
 
@@ -58,17 +58,23 @@ public final class TabsModel {
 
     private let store: TabsStore
     private let fallback: URL
+    /// Наблюдатель у каждой вкладки свой. Фабрика, а не готовый экземпляр:
+    /// общий наблюдатель следил бы за одной папкой на всех, и переключение
+    /// вкладок сбивало бы слежение фоновым.
+    private let makeWatcher: () -> any DirectoryWatching
 
     public init(
         path: URL = FileManager.default.homeDirectoryForCurrentUser,
-        store: TabsStore = TabsStore()
+        store: TabsStore = TabsStore(),
+        makeWatcher: @escaping () -> any DirectoryWatching = { DirectoryWatcher() }
     ) {
         self.store = store
         self.fallback = path
+        self.makeWatcher = makeWatcher
 
         let restored = store.restore()
         let paths = restored.paths.isEmpty ? [path] : restored.paths
-        tabs = paths.map { TabState(path: $0, showHiddenFiles: false) }
+        tabs = paths.map { TabState(path: $0, showHiddenFiles: false, watcher: makeWatcher()) }
         // Индекс мог указывать на вкладку, которая не уцелела.
         activeIndex = min(max(restored.activeIndex, 0), tabs.count - 1)
         tabs.forEach(watch)
@@ -92,13 +98,14 @@ public final class TabsModel {
     /// Открывает папку новой вкладкой справа от активной — а не в конце списка:
     /// вкладка должна появляться рядом с той, из которой её открыли.
     public func open(_ url: URL, activate: Bool = true) {
-        let tab = TabState(path: url, showHiddenFiles: showHiddenFiles)
+        let tab = TabState(path: url, showHiddenFiles: showHiddenFiles, watcher: makeWatcher())
         watch(tab)
         let index = activeIndex + 1
         tabs.insert(tab, at: index)
         if activate {
             activeIndex = index
             loadIfNeeded(tab)
+            updateWatching()
         }
         save()
     }
@@ -121,7 +128,10 @@ public final class TabsModel {
         if wasActive {
             // Правая соседка, а если её нет — левая.
             activeIndex = min(index, tabs.count - 1)
+            let wasLoaded = active.hasLoaded
             loadIfNeeded(active)
+            updateWatching()
+            if wasLoaded { active.browser.refreshAfterReturn() }
         } else if index < activeIndex {
             // Активной остаётся та же вкладка, а не тот же индекс.
             activeIndex -= 1
@@ -137,7 +147,10 @@ public final class TabsModel {
         tabs = [kept]
         activeIndex = 0
         // Оставленная вкладка могла быть фоновой и папку ещё не читать.
+        let wasLoaded = active.hasLoaded
         loadIfNeeded(active)
+        updateWatching()
+        if wasLoaded { active.browser.refreshAfterReturn() }
         save()
     }
 
@@ -151,7 +164,12 @@ public final class TabsModel {
         // указанная вкладка, а она могла быть фоновой и папку не читать.
         let wasActiveClosed = activeIndex > index
         activeIndex = min(activeIndex, tabs.count - 1)
-        if wasActiveClosed { loadIfNeeded(active) }
+        if wasActiveClosed {
+            let wasLoaded = active.hasLoaded
+            loadIfNeeded(active)
+            if wasLoaded { active.browser.refreshAfterReturn() }
+        }
+        updateWatching()
         save()
     }
 
@@ -159,8 +177,17 @@ public final class TabsModel {
 
     public func select(index: Int) {
         guard tabs.indices.contains(index) else { return }
+        let changed = activeIndex != index
         activeIndex = index
+        let wasLoaded = active.hasLoaded
         loadIfNeeded(active)
+        updateWatching()
+        // Пока вкладка была фоновой, слежения за ней не велось, и папка могла
+        // измениться. Только для уже прочитанной: непрочитанную читает
+        // loadIfNeeded, и второе обновление поверх было бы лишним обходом.
+        if changed, wasLoaded {
+            active.browser.refreshAfterReturn()
+        }
         save()
     }
 
@@ -179,6 +206,24 @@ public final class TabsModel {
     /// Загружает активную вкладку при первом показе окна.
     public func loadActive() {
         loadIfNeeded(active)
+        updateWatching()
+    }
+
+    /// Оставляет слежение ровно у активной вкладки.
+    ///
+    /// Следить за всеми открытыми значило бы держать по потоку FSEvents на
+    /// вкладку: десять вкладок на сетевом диске — десять соединений к серверу.
+    /// Фоновая вкладка вместо этого обновляется при возврате: пока её не видно,
+    /// расхождение списка с диском никого не беспокоит.
+    private func updateWatching() {
+        for (index, tab) in tabs.enumerated() where index != activeIndex {
+            tab.browser.stopWatching()
+        }
+        // Непрочитанной вкладке слежение поставит сама загрузка, по готовому
+        // списку: событие на недочитанную папку дало бы дифф против неполного
+        // списка.
+        guard active.hasLoaded else { return }
+        active.browser.resumeWatching()
     }
 
     public func select(id: UUID) {

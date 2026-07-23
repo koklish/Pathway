@@ -402,4 +402,91 @@ struct TabsModelTests {
 
         #expect(restored.tabs.count == 1)
     }
+
+    // MARK: - Слежение за папкой
+
+    /// Модель с подменными наблюдателями: настоящий FSEvents во вкладках
+    /// потребовал бы ждать событий от ядра.
+    private func makeWatchedModel() -> (TabsModel, WatcherFactory) {
+        let factory = WatcherFactory()
+        let model = TabsModel(
+            path: home,
+            store: TabsStore(defaults: makeDefaults()),
+            makeWatcher: { factory.make() }
+        )
+        return (model, factory)
+    }
+
+    /// Раздаёт наблюдателей вкладкам и помнит всех выданных.
+    @MainActor
+    final class WatcherFactory {
+        private(set) var watchers: [FakeDirectoryWatcher] = []
+
+        func make() -> FakeDirectoryWatcher {
+            let watcher = FakeDirectoryWatcher()
+            watchers.append(watcher)
+            return watcher
+        }
+
+        /// Наблюдатели, следящие за папкой прямо сейчас.
+        var active: [FakeDirectoryWatcher] { watchers.filter(\.isWatching) }
+    }
+
+    @Test("слежение включено только у активной вкладки, а не у всех сразу")
+    func onlyActiveTabIsWatched() async throws {
+        let (model, factory) = makeWatchedModel()
+        model.loadActive()
+        await model.active.browser.waitForLoad()
+
+        model.open(tmp)
+        await model.active.browser.waitForLoad()
+
+        #expect(factory.active.count == 1)
+        #expect(factory.active.first?.watched?.path == "/tmp")
+    }
+
+    @Test("переключение вкладок переносит слежение на новую активную")
+    func switchingTabsMovesWatch() async throws {
+        let (model, factory) = makeWatchedModel()
+        model.loadActive()
+        await model.active.browser.waitForLoad()
+        model.open(tmp)
+        await model.active.browser.waitForLoad()
+
+        model.select(index: 0)
+        await model.active.browser.waitForLoad()
+
+        #expect(factory.active.count == 1)
+        #expect(factory.active.first?.watched?.path == home.path)
+    }
+
+    @Test("возврат на прочитанную вкладку обновляет её, не сбрасывая hasLoaded")
+    func returningToTabRefreshesIt() async throws {
+        let (model, _) = makeWatchedModel()
+        model.loadActive()
+        await model.active.browser.waitForLoad()
+        model.open(tmp)
+        await model.active.browser.waitForLoad()
+
+        model.select(index: 0)
+        await model.active.browser.waitForRefresh()
+
+        #expect(model.active.hasLoaded)
+        // Список не должен мигнуть пустым: показ мгновенный, обновление поверх.
+        #expect(!model.active.browser.items.isEmpty)
+    }
+
+    @Test("закрытие вкладки останавливает её слежение")
+    func closingTabStopsWatching() async throws {
+        let (model, factory) = makeWatchedModel()
+        model.loadActive()
+        await model.active.browser.waitForLoad()
+        model.open(tmp)
+        await model.active.browser.waitForLoad()
+        let closed = try #require(factory.active.first)
+
+        model.closeActive()
+
+        #expect(closed.stopCount >= 1)
+    }
 }

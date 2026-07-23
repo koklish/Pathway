@@ -33,6 +33,12 @@ public final class BrowserModel {
     /// true, пока идёт чтение папки — для индикатора в интерфейсе.
     public private(set) var isLoading = false
 
+    /// Открыт инлайн-редактор имени. Поднимает его вью на время правки.
+    ///
+    /// Внешнее обновление при поднятом флаге не трогает список: перезагрузка
+    /// таблицы уводит фокус из поля, и набранное имя пропадает под руками.
+    public var isRenaming = false
+
     /// Текущая папка лежит на томе только для чтения — команды записи погашены.
     ///
     /// Спрашиваем файловую систему, а не смотрим на схему адреса: FTP через
@@ -64,10 +70,22 @@ public final class BrowserModel {
     /// Текущая загрузка: при быстром переключении папок предыдущая отменяется,
     /// иначе медленный сетевой ответ перезапишет уже открытую папку.
     private var loadTask: Task<Void, Never>?
+    private let watcher: any DirectoryWatching
+    /// Обновление по событию от файловой системы. Отдельная задача, а не loadTask:
+    /// отмена чтения при закрытии вкладки не должна зависеть от того, пришло ли
+    /// событие, и наоборот.
+    private var refreshTask: Task<Void, Never>?
+    /// Второй проход обновления — метаданные добавившихся записей.
+    private var metadataTask: Task<Void, Never>?
 
-    public init(path: URL, pasteboard: PasteboardService = PasteboardService()) {
+    public init(
+        path: URL,
+        pasteboard: PasteboardService = PasteboardService(),
+        watcher: any DirectoryWatching = DirectoryWatcher()
+    ) {
         self.pane = PaneState(path: path)
         self.pasteboard = pasteboard
+        self.watcher = watcher
     }
 
     public var breadcrumbs: [Breadcrumb] {
@@ -189,7 +207,121 @@ public final class BrowserModel {
                 items = []
                 errorMessage = Self.describe(error, at: directory)
             }
+
+            // Слежение ставим по готовому списку, а не в начале загрузки:
+            // событие, пришедшее на недочитанную папку, дало бы дифф против
+            // неполного списка и «потеряло» бы ещё не показанные файлы.
+            guard !Task.isCancelled, pane.path == directory else { return }
+            startWatching(directory)
         }
+    }
+
+    // MARK: - Внешние изменения
+
+    /// Подписывается на изменения папки. Повторный вызов переставляет слежение:
+    /// отдельный stop не нужен, у наблюдателя всегда одна папка.
+    private func startWatching(_ directory: URL) {
+        watcher.start(directory) { [weak self] change in
+            self?.applyExternalChange(change)
+        }
+    }
+
+    /// Обновляет список по событию файловой системы — диффом, а не перезагрузкой.
+    ///
+    /// Полный reloadAsync здесь стоил бы на сетевой папке сотен миллисекунд, а
+    /// событие приходит на каждое чужое создание файла. Поэтому перечитываются
+    /// только имена (дешёвый обход через d_type), а метаданные — лишь у записей,
+    /// которых в списке не было.
+    private func applyExternalChange(_ change: DirectoryChange) {
+        // Редактор имени перезагрузка таблицы сбила бы, а своя операция и так
+        // заканчивается вызовом reload — второе обновление поверх неё лишнее.
+        guard !isRenaming, !isBusy else { return }
+
+        let directory = pane.path
+        let showHidden = showHiddenFiles
+
+        refreshTask?.cancel()
+        refreshTask = Task { [loader] in
+            // .utility, а не .userInitiated: обновления никто не ждал, и оно не
+            // должно соперничать с чтением папки, в которую пользователь перешёл.
+            guard let names = try? await Task.detached(priority: .utility, operation: {
+                try loader.loadNames(directory: directory, showHidden: showHidden)
+            }).value else {
+                // Папку удалили или том отвалился. Алерт здесь неуместен: человек
+                // этого обновления не просил, а список пусть остаётся прежним.
+                return
+            }
+
+            guard !Task.isCancelled, pane.path == directory else { return }
+            merge(names, hasModifications: change.hasModifications, in: directory, showHidden: showHidden)
+        }
+    }
+
+    /// Сливает свежий состав папки с показанным списком, сохраняя прочитанные метаданные.
+    private func merge(_ names: [FileItem], hasModifications: Bool, in directory: URL, showHidden: Bool) {
+        let known = Dictionary(uniqueKeysWithValues: items.map { ($0.url, $0) })
+        let merged = names.map { fresh in
+            // Уцелевшая запись сохраняет размер и дату; при ItemModified они
+            // устарели, и запись отправляется во второй проход как новая.
+            guard !hasModifications, let existing = known[fresh.url] else { return fresh }
+            return existing
+        }
+
+        // Выделение чистим от исчезнувших: иначе команды работали бы с URL,
+        // которых в папке уже нет.
+        let present = Set(merged.map(\.url))
+        pane.selection = pane.selection.intersection(present)
+
+        items = sorted(merged)
+
+        let incomplete = merged.filter { !$0.metadataLoaded }
+        guard !incomplete.isEmpty else {
+            cache.store(merged, for: directory, showHidden: showHidden)
+            return
+        }
+        loadMetadataAfterMerge(in: directory, showHidden: showHidden)
+    }
+
+    /// Второй проход: размеры и даты для записей, попавших в список без них.
+    private func loadMetadataAfterMerge(in directory: URL, showHidden: Bool) {
+        let pending = items
+        metadataTask?.cancel()
+        metadataTask = Task { [loader] in
+            let detailed = await Task.detached(priority: .utility) {
+                loader.loadMetadata(for: pending)
+            }.value
+
+            guard !Task.isCancelled, pane.path == directory else { return }
+            // Только полные записи попадают в кэш — там не должно быть заготовок.
+            cache.store(detailed, for: directory, showHidden: showHidden)
+            items = sorted(detailed)
+        }
+    }
+
+    /// Перечитывает папку, как после внешнего изменения. Зовётся при возврате
+    /// на вкладку: пока она была фоновой, слежение за ней не велось.
+    public func refreshAfterReturn() {
+        applyExternalChange(DirectoryChange(hasModifications: true))
+    }
+
+    /// Снимает слежение — вкладка ушла в фон или окно потеряло фокус.
+    public func stopWatching() {
+        watcher.stop()
+    }
+
+    /// Возвращает слежение за текущей папкой.
+    public func resumeWatching() {
+        startWatching(pane.path)
+    }
+
+    /// Ждёт применения внешнего обновления — для тестов.
+    public func waitForRefresh() async {
+        await refreshTask?.value
+    }
+
+    /// Ждёт второго прохода за метаданными — для тестов.
+    public func waitForMetadata() async {
+        await metadataTask?.value
     }
 
     /// Лежит ли папка на томе только для чтения.
@@ -238,6 +370,9 @@ public final class BrowserModel {
     /// памяти до своего конца.
     public func cancelLoad() {
         loadTask?.cancel()
+        refreshTask?.cancel()
+        metadataTask?.cancel()
+        watcher.stop()
     }
 
     public func open(_ item: FileItem) {

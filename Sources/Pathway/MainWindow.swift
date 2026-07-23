@@ -137,6 +137,15 @@ struct MainWindow: View {
         // при возврате в приложение список нужно перечитать.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             connection.mounted.refresh()
+            // Пока приложение было в фоне, слежение не велось: возвращаем его и
+            // разом подбираем всё, что изменилось за это время.
+            appState.browser.resumeWatching()
+            appState.browser.refreshAfterReturn()
+        }
+        // Список, которого не видно, обновлять незачем, а слежение за сетевой
+        // папкой продолжало бы держать соединение с сервером.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            appState.browser.stopWatching()
         }
         // Пока открыт диалог с полями ввода, файловые команды гасятся. Сброс
         // висит на onDisappear, а не на кнопках: Esc закрывает лист мимо них.
