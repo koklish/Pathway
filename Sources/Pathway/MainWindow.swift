@@ -65,8 +65,20 @@ struct MainWindow: View {
             // элемент в секцию detail вместо правого угла строки заголовка —
             // именно там значок версии должен быть виден всегда. .primaryAction
             // это гарантирует.
-            ToolbarItem(placement: .primaryAction) {
-                UpdateBadgeView(service: updates)
+            // macOS 26 кладёт под каждый элемент тулбара собственную стеклянную
+            // подложку (Liquid Glass) — и она просвечивала бледной капсулой
+            // вокруг нашей. .sharedBackgroundVisibility(.hidden) её прячет: чип
+            // рисует свой фон сам. Под #available, потому что target — macOS 15,
+            // где этого API ещё нет, да и подложки тулбара там не было.
+            if #available(macOS 26, *) {
+                ToolbarItem(placement: .primaryAction) {
+                    UpdateBadgeView(service: updates)
+                }
+                .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .primaryAction) {
+                    UpdateBadgeView(service: updates)
+                }
             }
         }
         .onAppear {
