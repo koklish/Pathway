@@ -74,6 +74,7 @@ struct NetworkSection: View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 6)
+            .onboardingTarget(.connectServer)
         }
         .alert(
             "Не удалось отключить том",

@@ -39,10 +39,12 @@ struct MainWindow: View {
                     showConnectServer = true
                 }
             )
+            .onboardingTarget(.sidebar)
             .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 340)
         } detail: {
             VStack(spacing: 0) {
                 AddressBarView(model: model)
+                    .onboardingTarget(.addressBar)
                 Divider()
                 FileListView(
                     model: model, actions: actions, appState: appState,
@@ -60,7 +62,33 @@ struct MainWindow: View {
                 ClickCatcher { NSApp.keyWindow?.makeFirstResponder(nil) }
             }
         }
+        // Обучающий тур поверх всего окна. Якоря целей собраны из дочерних вью
+        // (.onboardingTarget), здесь переводятся в координаты overlay и уходят в
+        // OnboardingOverlay. Слой рисуется, только пока тур идёт.
+        .overlayPreferenceValue(OnboardingAnchorKey.self) { anchors in
+            GeometryReader { proxy in
+                if appState.onboarding.isActive {
+                    OnboardingOverlay(
+                        onboarding: appState.onboarding,
+                        targets: anchors.mapValues { proxy[$0] },
+                        bounds: proxy.size
+                    )
+                }
+            }
+            .ignoresSafeArea()
+            .animation(.easeInOut(duration: 0.2), value: appState.onboarding.currentStep)
+        }
         .toolbar {
+            // Кнопка «?» слева от чипа версии: объявлена раньше, поэтому в секции
+            // primaryAction встаёт левее. Запускает тур заново.
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    appState.onboarding.start()
+                } label: {
+                    Image(systemName: "questionmark.circle")
+                }
+                .help("Показать обучение")
+            }
             // .automatic отдаёт размещение системе, а она вправе положить
             // элемент в секцию detail вместо правого угла строки заголовка —
             // именно там значок версии должен быть виден всегда. .primaryAction

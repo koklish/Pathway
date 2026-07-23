@@ -21,6 +21,10 @@ struct PathwayApp: App {
         // сервис передаём явно в init, а не через биндинг, чтобы он был на
         // месте уже к моменту applicationDidFinishLaunching.
         appDelegate.updates = updates
+        // Онбординг запускается при первом запуске из делегата, а не из
+        // MainWindow.onAppear: последний срабатывает повторно при открытии
+        // окна из меню «Окно» после ⌘W, а первый запуск — событие процесса.
+        appDelegate.onboarding = appState.onboarding
     }
 
     var body: some Scene {
@@ -45,11 +49,16 @@ final class PathwayAppDelegate: NSObject, NSApplicationDelegate {
     /// Проставляется биндингом из PathwayApp до того, как AppKit позовёт
     /// applicationDidFinishLaunching — сервис нужен уже на первом тике.
     var updates: UpdateService?
+    /// Тот же экземпляр тура, что и в AppState окна.
+    var onboarding: OnboardingModel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Бандл предыдущей версии больше не нужен: раз мы выполняемся,
         // обновление удалось.
         BundleUpdateInstaller.cleanUpAfterUpdate()
         Task { @MainActor in await updates?.checkAutomatically() }
+        // Первый локальный запуск — показать обучающий тур. Флаг в UserDefaults
+        // переживает обновление, так что повторно тур сам не появится.
+        MainActor.assumeIsolated { onboarding?.startIfFirstLaunch() }
     }
 }
