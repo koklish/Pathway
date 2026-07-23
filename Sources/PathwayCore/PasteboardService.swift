@@ -34,6 +34,18 @@ public struct PasteboardService {
         pasteboard.setString(operation.rawValue, forType: Self.operationType)
     }
 
+    /// Кладёт в буфер текст. `clearContents` обязателен: без него URL от
+    /// прошлого «Копировать» остались бы в буфере, и «Вставить» скопировала бы
+    /// сам файл вместо ожидаемой строки.
+    public func writeText(_ text: String) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    public func readText() -> String? {
+        pasteboard.string(forType: .string)
+    }
+
     public func readURLs() -> [URL] {
         let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
         let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: options)

@@ -409,6 +409,13 @@ struct FolderMenuItems: View {
             }
         }
         Divider()
+        // Путь берётся у папки меню, а не у открытой в списке: команда реестра
+        // работает от выделения и здесь скопировала бы не то, по чему кликнули.
+        Button {
+            model.copyPath([folder])
+        } label: {
+            MenuLabel("Копировать путь", symbol: "document.on.clipboard")
+        }
         Button {
             actions.revealInFinder(folder)
         } label: {

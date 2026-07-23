@@ -43,7 +43,12 @@ struct AppCommands: Commands {
         //
         // Файловую сторону реализует FileListView.Coordinator — он first
         // responder, когда фокус в списке.
+        // «Копировать путь» здесь свой Button со своим шорткатом — в отличие от
+        // соседей по группе: ⌥⌘C не занят стандартным пунктом «Правки», и
+        // перехватывать у текстовых полей нечего.
         CommandGroup(after: .pasteboard) {
+            Divider()
+            item(.copyPath)
             Divider()
             item(.moveToTrash)
         }

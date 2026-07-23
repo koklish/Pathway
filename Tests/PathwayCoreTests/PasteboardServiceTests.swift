@@ -60,4 +60,25 @@ struct PasteboardServiceTests {
 
         #expect(service.readURLs().map(\.lastPathComponent) == ["second.txt"])
     }
+
+    @Test("кладёт текст в буфер")
+    func writesText() {
+        let (service, pasteboard) = makeService()
+
+        service.writeText("/tmp/файл.txt")
+
+        #expect(pasteboard.string(forType: .string) == "/tmp/файл.txt")
+    }
+
+    @Test("текст вытесняет из буфера файлы, а не ложится рядом с ними")
+    func textReplacesFiles() {
+        let (service, _) = makeService()
+        service.write([URL(fileURLWithPath: "/tmp/a.txt")], operation: .copy)
+
+        service.writeText("/tmp/a.txt")
+
+        // Иначе «Вставить» после «Копировать путь» скопировала бы сам файл:
+        // canPaste смотрит на URL в буфере, а они остались бы от прошлой команды.
+        #expect(service.readURLs().isEmpty)
+    }
 }

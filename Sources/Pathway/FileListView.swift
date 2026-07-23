@@ -553,6 +553,7 @@ struct FileListView: NSViewRepresentable {
             add(to: menu, .copy, #selector(menuCopy))
             add(to: menu, .cut, #selector(menuCut))
             add(to: menu, .paste, #selector(menuPaste))
+            add(to: menu, .copyPath, #selector(menuCopyPath))
             menu.addItem(.separator())
 
             if item != nil {
@@ -569,7 +570,7 @@ struct FileListView: NSViewRepresentable {
                     add(to: menu, .extractHere, busy ? nil : #selector(menuExtractHere))
                     add(to: menu, .extractHere, busy ? nil : #selector(menuExtractTo), title: "Распаковать в…")
                 } else {
-                    let targets = archiveTargets
+                    let targets = clickedTargets
                     let title = targets.count > 1 ? "Архивировать \(targets.count) объектов…" : nil
                     add(to: menu, .compress, busy ? nil : #selector(menuCompress), title: title)
                 }
@@ -699,9 +700,9 @@ struct FileListView: NSViewRepresentable {
             return item.url
         }
 
-        /// Элементы, которые попадут в архив: вся мультиселекция, если клик был
-        /// по ней, иначе только кликнутый элемент.
-        private var archiveTargets: [FileItem] {
+        /// Элементы, к которым относится команда: вся мультиселекция, если клик
+        /// был по ней, иначе только кликнутый элемент.
+        private var clickedTargets: [FileItem] {
             guard let item = clickedItem else { return [] }
             let selected = model.items.filter { model.pane.selection.contains($0.url) }
             if selected.count > 1, selected.contains(where: { $0.url == item.url }) {
@@ -711,7 +712,7 @@ struct FileListView: NSViewRepresentable {
         }
 
         @objc private func menuCompress() {
-            let targets = archiveTargets
+            let targets = clickedTargets
             guard !targets.isEmpty else { return }
             onCompress(targets)
         }
@@ -742,6 +743,12 @@ struct FileListView: NSViewRepresentable {
             appState.tabs.open(item.url, activate: true)
         }
         @objc private func menuCopy() { model.copy() }
+        /// Клик по пустому месту копирует путь открытой папки — как «Открыть в
+        /// Терминале» там же берёт текущую папку.
+        @objc private func menuCopyPath() {
+            let targets = clickedTargets
+            model.copyPath(targets.isEmpty ? [model.pane.path] : targets.map(\.url))
+        }
         @objc private func menuCut() { model.cut() }
         @objc private func menuPaste() { model.paste() }
         @objc private func menuNewFolder() { model.createFolder() }

@@ -486,6 +486,19 @@ public final class BrowserModel {
         pane.clearCut()
     }
 
+    /// Кладёт в буфер пути обычным текстом — чтобы вставить их в терминал или
+    /// в переписку. `urls` передаёт контекстное меню, работающее от кликнутой
+    /// строки; без него берётся выделение, а на пустом выделении — сама папка.
+    ///
+    /// Несколько путей разделяются переводом строки: так их принимает и
+    /// оболочка, и любой текстовый редактор. Порядок — как в списке, а не как в
+    /// `Set`, иначе две строки приходили бы в случайном порядке.
+    public func copyPath(_ urls: [URL]? = nil) {
+        let targets = urls ?? (pane.selection.isEmpty ? [pane.path] : selectedItems.map(\.url))
+        guard !targets.isEmpty else { return }
+        pasteboard.writeText(targets.map(\.path).joined(separator: "\n"))
+    }
+
     public func cut() {
         guard !pane.selection.isEmpty else { return }
         let urls = Array(pane.selection)

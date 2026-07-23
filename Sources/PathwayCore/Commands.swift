@@ -39,7 +39,7 @@ public enum CommandID: String, CaseIterable, Sendable {
     // Файл
     case newFolder, open, rename, compress, extractHere, revealInFinder, openTerminal, openClaude
     // Правка
-    case copy, cut, paste, selectAll, moveToTrash
+    case copy, cut, paste, copyPath, selectAll, moveToTrash
     // Вид
     case toggleHiddenFiles, refresh
     // Переход
@@ -190,6 +190,19 @@ public enum CommandRegistry {
             icon: "clipboard",
             isEnabled: { !$0.browser.isReadOnlyVolume && $0.browser.canPaste },
             run: { $0.browser.paste() }
+        ),
+        AppCommand(
+            id: .copyPath,
+            // Шорткат свой, а не системный: у ⌥⌘C нет стандартного пункта
+            // «Правки» с готовым селектором, перехватывать у текстовых полей
+            // нечего.
+            title: "Копировать путь",
+            shortcut: Shortcut(.character("c"), [.command, .option]),
+            icon: "document.on.clipboard",
+            // Работает и на пустом выделении: тогда копируется путь открытой
+            // папки, и пункт остаётся осмысленным при клике по пустому месту.
+            isEnabled: { !$0.isEditingText },
+            run: { $0.browser.copyPath() }
         ),
         AppCommand(
             id: .selectAll,
