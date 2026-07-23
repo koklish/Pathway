@@ -175,7 +175,7 @@ struct UpdateServiceTests {
 
         await service.checkManually()
 
-        #expect(service.state == .idle)
+        #expect(service.state == .upToDate)
     }
 
     @Test("не предлагает откатиться на старую версию")
@@ -185,7 +185,7 @@ struct UpdateServiceTests {
 
         await service.checkManually()
 
-        #expect(service.state == .idle)
+        #expect(service.state == .upToDate)
     }
 
     @Test("молчит, когда автопроверка не удалась")
@@ -297,7 +297,7 @@ struct UpdateServiceTests {
 
         await service.checkManually()
 
-        #expect(service.state == .idle)
+        #expect(service.state == .upToDate)
     }
 
     @Test("скачивает архив и переводит в readyToRestart")
@@ -315,7 +315,7 @@ struct UpdateServiceTests {
 
         await service.download()
 
-        #expect(service.state == .readyToRestart(installer.preparedBundle))
+        #expect(service.state == .readyToRestart(makeRelease("1.1.0", size: 200_000), installer.preparedBundle))
         #expect(installer.prepared != nil)
     }
 
@@ -337,7 +337,7 @@ struct UpdateServiceTests {
 
         await service.download()
 
-        #expect(service.state == .readyToRestart(installer.preparedBundle))
+        #expect(service.state == .readyToRestart(makeRelease("1.1.0", size: 0), installer.preparedBundle))
     }
 
     @Test("повторная загрузка после сбоя не требует новой проверки GitHub")
@@ -367,7 +367,7 @@ struct UpdateServiceTests {
         installer.error = nil
         await service.download()
 
-        #expect(service.state == .readyToRestart(installer.preparedBundle))
+        #expect(service.state == .readyToRestart(makeRelease("1.1.0", size: 4096), installer.preparedBundle))
         #expect(fetcher.callCount == 1)
     }
 
@@ -454,7 +454,7 @@ struct UpdateServiceTests {
         // не нажал «Перезапустить».
         #expect(installer.launchCount == 0)
         #expect(terminator.terminateCount == 0)
-        #expect(service.state == .readyToRestart(installer.preparedBundle))
+        #expect(service.state == .readyToRestart(makeRelease("1.1.0", size: 4096), installer.preparedBundle))
 
         service.restart()
 
@@ -582,6 +582,94 @@ struct UpdateServiceTests {
         } throws: { error in
             (error as? UpdateError)?.errorDescription == UpdateError.preparedBundleMissing.errorDescription
         }
+    }
+
+    @Test("успешная проверка без нового релиза даёт upToDate, а не idle")
+    @MainActor
+    func successfulCheckWithoutNewReleaseIsUpToDate() async {
+        // Поповер по этим двум случаям выбирает между «Установлена последняя
+        // версия» и молчанием: сведи их снова в .idle — и приложение начнёт
+        // утверждать, что версия последняя, ни разу не сходив на GitHub.
+        let service = makeService(fetcher: FakeReleaseFetcher(release: makeRelease("1.0.0")))
+
+        #expect(service.state == .idle)
+
+        await service.checkManually()
+
+        #expect(service.state == .upToDate)
+    }
+
+    @Test("дата последней проверки публикуется после успешного ответа")
+    @MainActor
+    func lastCheckIsPublishedAfterSuccess() async {
+        let service = makeService(fetcher: FakeReleaseFetcher(release: makeRelease("1.1.0")))
+
+        #expect(service.lastCheck == nil)
+
+        let before = Date()
+        await service.checkManually()
+
+        guard let lastCheck = service.lastCheck else {
+            Issue.record("дата последней проверки не заполнена после успешного ответа")
+            return
+        }
+        #expect(lastCheck >= before)
+    }
+
+    @Test("неудачная проверка дату последней проверки не двигает")
+    @MainActor
+    func failedCheckDoesNotAdvanceLastCheck() async {
+        // Подвал поповера пишет «Проверено в 21:59» из этого же значения. Запиши
+        // сюда время неудачной попытки — и человек прочтёт, что проверка была,
+        // хотя до GitHub достучаться не удалось.
+        let fetcher = FakeReleaseFetcher(release: makeRelease("1.1.0"))
+        let service = makeService(fetcher: fetcher)
+        await service.checkManually()
+        let afterSuccess = service.lastCheck
+
+        fetcher.error = URLError(.notConnectedToInternet)
+        await service.checkManually()
+
+        #expect(service.lastCheck == afterSuccess)
+    }
+
+    @Test("дата последней проверки переживает перезапуск приложения")
+    @MainActor
+    func lastCheckSurvivesRelaunch() async {
+        // Одно хранилище на два потребителя — ограничение суток и подпись в
+        // поповере: заведи второе, и после перезапуска подпись разошлась бы с
+        // тем, по чему считается интервал.
+        let defaults = makeDefaults()
+        let service = makeService(fetcher: FakeReleaseFetcher(release: makeRelease("1.1.0")), defaults: defaults)
+        await service.checkManually()
+
+        let relaunched = makeService(fetcher: FakeReleaseFetcher(), defaults: defaults)
+
+        #expect(relaunched.lastCheck == service.lastCheck)
+    }
+
+    @Test("версия релиза доживает до готовности к перезапуску, а не теряется на загрузке")
+    @MainActor
+    func releaseVersionSurvivesUntilReadyToRestart() async {
+        // Поповер на загрузке пишет «Загрузка версии 1.1.0…», а на готовности —
+        // «Версия 1.1.0 готова к установке». Пока релиз лежал только в
+        // .available, к этому моменту он был уже затёрт, и номер версии брать
+        // было неоткуда.
+        StubURLProtocol.data = Data(repeating: 0x41, count: 4096)
+        StubURLProtocol.headers = ["Content-Length": "4096"]
+        let service = makeService(
+            fetcher: FakeReleaseFetcher(release: makeRelease("1.1.0", size: 4096)),
+            session: StubURLProtocol.session()
+        )
+        await service.checkManually()
+
+        await service.download()
+
+        guard case .readyToRestart(let release, _) = service.state else {
+            Issue.record("ожидалось состояние .readyToRestart, получено \(service.state)")
+            return
+        }
+        #expect(release.version == AppVersion("1.1.0")!)
     }
 
     @Test("разбирает ответ GitHub")

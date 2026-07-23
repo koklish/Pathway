@@ -12,16 +12,26 @@ import Observation
 /// самого случая делает такое рассогласование структурно невозможным — другого
 /// источника правды для «что качать при повторе» просто не существует.
 public enum UpdateState: Equatable, Sendable {
+    /// Ещё не спрашивали. Отличается от `.upToDate` тем, что сказать человеку
+    /// нечего: раньше оба случая сводились в `.idle`, и поповер не мог выбрать
+    /// между «Установлена последняя версия» и молчанием — утверждать первое, ни
+    /// разу не сходив на GitHub, он не вправе.
     case idle
     case checking
+    /// Сходили и убедились: новее ничего нет.
+    case upToDate
     case available(ReleaseInfo)
-    case downloading(Double)
-    /// Параметр — путь к проверенному бандлу, который ждёт подмены. Лежит внутри
-    /// состояния по той же причине, что и релиз у `.failed`: отдельное поле рядом
-    /// с `state` — это второй источник правды, который уже однажды разошёлся с
-    /// первым. Пока путь живёт в самом случае, «готово к перезапуску без
-    /// подготовленного бандла» невыразимо, а не просто маловероятно.
-    case readyToRestart(URL)
+    /// Релиз рядом с долей загрузки: поповер пишет «Загрузка версии 1.1.0…», и
+    /// без релиза в самом случае номер версии брать неоткуда — состояние
+    /// `.available` к этому моменту уже затёрто.
+    case downloading(ReleaseInfo, Double)
+    /// Параметры — релиз и путь к проверенному бандлу, который ждёт подмены.
+    /// Лежат внутри состояния по той же причине, что и релиз у `.failed`:
+    /// отдельное поле рядом с `state` — это второй источник правды, который уже
+    /// однажды разошёлся с первым. Пока путь живёт в самом случае, «готово к
+    /// перезапуску без подготовленного бандла» невыразимо, а не просто
+    /// маловероятно.
+    case readyToRestart(ReleaseInfo, URL)
     case failed(String, ReleaseInfo?)
 }
 
@@ -34,6 +44,13 @@ public enum UpdateState: Equatable, Sendable {
 public final class UpdateService {
     public private(set) var state: UpdateState = .idle
     public let currentVersion: AppVersion
+
+    /// Когда GitHub отвечал в последний раз — подвал поповера пишет «Проверено
+    /// в 21:59». Наблюдаемое свойство, а не чтение `UserDefaults` из вью:
+    /// значение меняется во время работы, и вью обязано перерисоваться само.
+    /// Хранилище то же самое, что у ограничения раз в сутки, — иначе появились
+    /// бы две даты последней проверки, расходящиеся при первой же неудаче.
+    public private(set) var lastCheck: Date?
 
     private let fetcher: any ReleaseFetching
     private let installer: any UpdateInstalling
@@ -61,6 +78,7 @@ public final class UpdateService {
         self.terminator = terminator
         self.defaults = defaults
         self.session = session
+        self.lastCheck = defaults.object(forKey: Self.lastCheckKey) as? Date
     }
 
     // MARK: - Проверка
@@ -77,9 +95,8 @@ public final class UpdateService {
     }
 
     private var shouldCheckNow: Bool {
-        let last = defaults.object(forKey: Self.lastCheckKey) as? Date
-        guard let last else { return true }
-        return Date().timeIntervalSince(last) >= Self.checkInterval
+        guard let lastCheck else { return true }
+        return Date().timeIntervalSince(lastCheck) >= Self.checkInterval
     }
 
     private func check(silent: Bool) async {
@@ -98,9 +115,11 @@ public final class UpdateService {
             // проверка не должна засчитываться как состоявшаяся — иначе
             // приложение, однажды не достучавшееся до сети, замолкало бы
             // на сутки, хотя ни разу не проверило обновления по-настоящему.
-            defaults.set(Date(), forKey: Self.lastCheckKey)
+            let now = Date()
+            defaults.set(now, forKey: Self.lastCheckKey)
+            lastCheck = now
             guard let release, release.version > currentVersion else {
-                state = .idle
+                state = .upToDate
                 return
             }
             state = .available(release)
@@ -134,7 +153,7 @@ public final class UpdateService {
         default:
             return
         }
-        state = .downloading(0)
+        state = .downloading(release, 0)
 
         do {
             let archive = try await downloadArchive(release)
@@ -143,7 +162,7 @@ public final class UpdateService {
             // между этим моментом и нажатием «Перезапустить» проходит сколько
             // угодно времени. Запуск перенесён в restart().
             let prepared = try installer.prepare(archive: archive)
-            state = .readyToRestart(prepared)
+            state = .readyToRestart(release, prepared)
         } catch {
             // Релиз — тот же самый, на котором упали: сохраняем его в состоянии,
             // а не в отдельном поле, иначе следующая неудачная проверка не смогла
@@ -161,6 +180,8 @@ public final class UpdateService {
     private static let chunkSize = 64 * 1024
 
     private func downloadArchive(_ release: ReleaseInfo) async throws -> URL {
+        // Релиз нужен не только ради архива: reportProgress кладёт его в
+        // .downloading, чтобы поповер мог назвать загружаемую версию.
         let (bytes, response) = try await session.bytes(from: release.archiveURL)
         let expected = response.expectedContentLength > 0
             ? response.expectedContentLength : release.size
@@ -188,13 +209,13 @@ public final class UpdateService {
                 try handle.write(contentsOf: buffer)
                 written += buffer.count
                 buffer.removeAll(keepingCapacity: true)
-                reportProgress(written: written, expected: expected, lastShown: &lastShown)
+                reportProgress(release: release, written: written, expected: expected, lastShown: &lastShown)
             }
         }
         if !buffer.isEmpty {
             try handle.write(contentsOf: buffer)
             written += buffer.count
-            reportProgress(written: written, expected: expected, lastShown: &lastShown)
+            reportProgress(release: release, written: written, expected: expected, lastShown: &lastShown)
         }
 
         return archive
@@ -203,7 +224,12 @@ public final class UpdateService {
     /// Обновляет `state` шагом примерно в процент — перерисовывать значок на
     /// каждый чанк незачем: шаг незаметен глазу, а обновление @Observable на
     /// каждой итерации стоит дорого.
-    private func reportProgress(written: Int, expected: Int64, lastShown: inout Double) {
+    private func reportProgress(
+        release: ReleaseInfo,
+        written: Int,
+        expected: Int64,
+        lastShown: inout Double
+    ) {
         // expected может быть 0 (сервер не прислал Content-Length, а размер
         // релиза в ReleaseInfo не заполнен) — без защиты деление дало бы NaN,
         // и .downloading(.nan) сломал бы отрисовку прогресс-бара.
@@ -211,7 +237,7 @@ public final class UpdateService {
         let progress = Double(written) / Double(expected)
         if progress - lastShown >= 0.01 {
             lastShown = progress
-            state = .downloading(min(progress, 1))
+            state = .downloading(release, min(progress, 1))
         }
     }
 
@@ -223,7 +249,7 @@ public final class UpdateService {
     /// уже некому. Отсчёт ожидания начинается здесь, поэтому в десять секунд
     /// укладывается обычное закрытие приложения, а не раздумья человека.
     public func restart() {
-        guard case .readyToRestart(let bundle) = state else { return }
+        guard case .readyToRestart(_, let bundle) = state else { return }
 
         do {
             try installer.launchInstaller(bundle: bundle)
