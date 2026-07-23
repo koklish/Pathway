@@ -24,6 +24,12 @@ public protocol CredentialStoring: Sendable {
     /// спрашивать разрешение на доступ к Связке ключей. Там, где нужен лишь факт
     /// наличия записи, платить диалогом незачем.
     func exists(for server: ServerAddress) -> Bool
+
+    /// Сохранённый логин — без чтения пароля.
+    ///
+    /// Логин лежит в атрибуте записи, а не в её защищённых данных, поэтому
+    /// подставить его в форму входа можно, не вызывая диалога.
+    func savedUser(for server: ServerAddress) -> String?
 }
 
 /// Ошибка Связки ключей с читаемым текстом.
@@ -83,6 +89,24 @@ public struct KeychainCredentialStore: CredentialStoring {
         return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
+    /// Читает логин через `kSecReturnAttributes`, без `kSecReturnData`.
+    ///
+    /// Диалога нет по той же причине, что и в `exists`: Связка отвечает по ACL
+    /// на чтение атрибутов, а защищённые данные записи здесь не запрашиваются.
+    public func savedUser(for server: ServerAddress) -> String? {
+        var query = Self.query(for: server)
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let found = item as? [String: Any],
+              let user = found[kSecAttrAccount as String] as? String
+        else { return nil }
+
+        return user
+    }
+
     public func delete(for server: ServerAddress) throws {
         let status = SecItemDelete(Self.query(for: server) as CFDictionary)
         // Записи не было — это не ошибка, результат тот же: её нет.
@@ -121,9 +145,11 @@ public final class InMemoryCredentialStore: CredentialStoring, @unchecked Sendab
     private var storage: [String: ServerCredentials] = [:]
     private let lock = NSLock()
 
-    /// Счётчики обращений: тесты следят, чтобы пароль не читали там, где хватает `exists`.
+    /// Счётчики обращений: тесты следят, чтобы пароль не читали там,
+    /// где хватает `exists` или `savedUser`.
     public private(set) var loadCount = 0
     public private(set) var existsCount = 0
+    public private(set) var savedUserCount = 0
 
     public init() {}
 
@@ -131,6 +157,7 @@ public final class InMemoryCredentialStore: CredentialStoring, @unchecked Sendab
         lock.withLock {
             loadCount = 0
             existsCount = 0
+            savedUserCount = 0
         }
     }
 
@@ -149,6 +176,13 @@ public final class InMemoryCredentialStore: CredentialStoring, @unchecked Sendab
         lock.withLock {
             existsCount += 1
             return storage[Self.key(server)] != nil
+        }
+    }
+
+    public func savedUser(for server: ServerAddress) -> String? {
+        lock.withLock {
+            savedUserCount += 1
+            return storage[Self.key(server)]?.user
         }
     }
 

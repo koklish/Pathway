@@ -79,7 +79,13 @@ public final class ServerConnection {
         connecting.insert(key)
         defer { connecting.remove(key) }
 
-        let saved = credentials.load(for: server)
+        // Сохранённый пароль читаем только когда он действительно понадобится:
+        // именно чтение данных пароля заставляет macOS показать диалог доступа
+        // к Связке ключей. Гостевому входу он не нужен вовсе, а при явно введённых
+        // логине и пароле — тем более: пользователь только что набрал их сам.
+        let saved = (asGuest || (user != nil && password != nil))
+            ? nil
+            : credentials.load(for: server)
         let wantsGuest = asGuest || (user == nil && saved == nil && bookmarks.bookmark(for: server)?.isGuest == true)
 
         // Явно переданные данные важнее сохранённых: пользователь только что их ввёл.
@@ -169,7 +175,7 @@ public final class ServerConnection {
     // MARK: - Учётные данные
 
     public func savedUser(for server: ServerAddress) -> String? {
-        credentials.load(for: server)?.user
+        credentials.savedUser(for: server)
     }
 
     public func hasSavedPassword(for server: ServerAddress) -> Bool {
@@ -207,12 +213,20 @@ public final class ServerConnection {
             try? credentials.delete(for: server)
             if target != server { try? credentials.delete(for: target) }
         } else if !user.isEmpty {
-            let existing = credentials.load(for: server)
-            let effectivePassword = password.isEmpty ? (existing?.password ?? "") : password
-            if !effectivePassword.isEmpty {
-                try? credentials.save(user: user, password: effectivePassword, for: target)
+            if !password.isEmpty {
+                // Пароль ввели заново — сохранённый читать незачем, он всё равно заменяется.
+                try? credentials.save(user: user, password: password, for: target)
                 if target != server { try? credentials.delete(for: server) }
+            } else if target != server || user != credentials.savedUser(for: server) {
+                // Пароль не трогали, но запись надо перенести на новый адрес или сменить
+                // в ней логин — только здесь и приходится прочитать сохранённый пароль.
+                if let existing = credentials.load(for: server), !existing.password.isEmpty {
+                    try? credentials.save(user: user, password: existing.password, for: target)
+                    if target != server { try? credentials.delete(for: server) }
+                }
             }
+            // Иначе адрес и логин прежние, а пароль не меняли: запись уже верна,
+            // перезаписывать её тем же значением — лишний диалог Связки ключей.
         }
 
         if let newAddress, newAddress != server {

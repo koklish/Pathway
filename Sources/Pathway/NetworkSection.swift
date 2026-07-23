@@ -169,12 +169,15 @@ private struct ServerRow: View {
     let onError: (String) -> Void
 
     @State private var isHovering = false
-    /// Наличие пароля выясняем один раз при появлении строки, а не в `body`.
+    /// Пункт «Забыть пароль» скрыт, если пароль уже забыли в этом же меню.
     ///
-    /// `body` пересобирается на каждое наведение мыши и обновление состояния, и обращение
-    /// к Связке ключей оттуда превращается в поток запросов — а если система решит
-    /// спросить разрешение, то и в бесконечную череду диалогов.
-    @State private var hasSavedPassword = false
+    /// Само наличие пароля здесь не хранится: его выясняет `menuItems` в момент
+    /// открытия меню. Ни `body`, ни `.task(id:)` для этого не годятся — `body`
+    /// пересобирается на каждое наведение мыши, а `.task` перезапускается ещё и когда
+    /// SwiftUI пересоздаёт вью: при смене выделения, монтировании тома, раскрытии ветки.
+    /// Обращение к Связке ключей оттуда превращалось в поток запросов у подключённого
+    /// сервера, где пользователь ничего не делал.
+    @State private var passwordForgotten = false
 
     private var server: ServerAddress { entry.server }
 
@@ -235,9 +238,6 @@ private struct ServerRow: View {
         .onHover { isHovering = $0 }
         .help(server.key.removingPercentEncoding ?? server.key)
         .contextMenu { menuItems }
-        .task(id: server.key) {
-            hasSavedPassword = connection.hasSavedPassword(for: server)
-        }
     }
 
     @ViewBuilder
@@ -282,11 +282,13 @@ private struct ServerRow: View {
             MenuLabel("Изменить настройки…", symbol: "gearshape")
         }
 
-        // Пункт, который ничего не делает, хуже отсутствующего.
-        if hasSavedPassword {
+        // Пункт, который ничего не делает, хуже отсутствующего. Запрос идёт здесь,
+        // а не в состоянии вью: замыкание меню выполняется при его открытии,
+        // то есть ровно тогда, когда ответ нужен.
+        if !passwordForgotten, connection.hasSavedPassword(for: server) {
             Button {
                 connection.forgetPassword(for: server)
-                hasSavedPassword = false
+                passwordForgotten = true
             } label: {
                 MenuLabel("Забыть пароль", symbol: "key.slash")
             }

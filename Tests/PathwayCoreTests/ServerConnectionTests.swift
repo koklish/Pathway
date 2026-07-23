@@ -312,6 +312,72 @@ struct ServerConnectionTests {
         #expect(credentials.existsCount == 1)
     }
 
+    @Test("чтение сохранённого логина не читает сам пароль")
+    func readingSavedUserDoesNotReadPassword() throws {
+        let (connection, _, credentials, _) = makeConnection(.needsAuth)
+        try credentials.save(user: "alex", password: "секрет", for: server)
+        credentials.resetCounters()
+
+        #expect(connection.savedUser(for: server) == "alex")
+
+        // Логин лежит в атрибутах записи, а пароль — в защищённых данных.
+        // Подстановка имени в форму входа не повод показывать диалог Связки ключей.
+        #expect(credentials.loadCount == 0)
+        #expect(credentials.savedUserCount == 1)
+    }
+
+    @Test("гостевое подключение не читает сохранённый пароль")
+    func guestConnectionDoesNotReadPassword() async throws {
+        let (connection, _, credentials, _) = makeConnection(.mounted(URL(fileURLWithPath: "/Volumes/Общие")))
+        try credentials.save(user: "alex", password: "секрет", for: server)
+        credentials.resetCounters()
+
+        _ = await connection.connect(to: server, asGuest: true)
+
+        // Гостю учётные данные не передаются вовсе — читать их незачем.
+        #expect(credentials.loadCount == 0)
+    }
+
+    @Test("подключение с введёнными логином и паролем не читает сохранённый")
+    func explicitCredentialsDoNotReadStoredOnes() async throws {
+        let (connection, mounter, credentials, _) = makeConnection(.mounted(URL(fileURLWithPath: "/Volumes/Общие")))
+        try credentials.save(user: "alex", password: "старый", for: server)
+        credentials.resetCounters()
+
+        _ = await connection.connect(to: server, user: "boris", password: "новый")
+
+        // Введённое пользователем всё равно важнее сохранённого: читать его — лишний диалог.
+        #expect(mounter.lastUser == "boris")
+        #expect(mounter.lastPassword == "новый")
+        #expect(credentials.loadCount == 0)
+    }
+
+    @Test("сохранение настроек без смены логина и пароля не трогает запись")
+    func unchangedSettingsDoNotTouchStore() throws {
+        let (connection, _, credentials, _) = makeConnection(.needsAuth)
+        try credentials.save(user: "alex", password: "секрет", for: server)
+        credentials.resetCounters()
+
+        connection.updateSettings(for: server, user: "alex", password: "", isGuest: false)
+
+        // Адрес и логин прежние, пароль не трогали — запись уже верна.
+        // Перезапись тем же значением стоила бы диалога Связки ключей на ровном месте.
+        #expect(credentials.loadCount == 0)
+        #expect(credentials.load(for: server)?.password == "секрет")
+    }
+
+    @Test("смена логина без ввода пароля переносит сохранённый пароль")
+    func changingUserKeepsStoredPassword() throws {
+        let (connection, _, credentials, _) = makeConnection(.needsAuth)
+        try credentials.save(user: "alex", password: "секрет", for: server)
+
+        connection.updateSettings(for: server, user: "boris", password: "", isGuest: false)
+
+        let stored = credentials.load(for: server)
+        #expect(stored?.user == "boris")
+        #expect(stored?.password == "секрет")
+    }
+
     @Test("пустой пароль при сохранении настроек не затирает сохранённый")
     func emptyPasswordKeepsStoredOne() throws {
         let (connection, _, credentials, _) = makeConnection(.needsAuth)
