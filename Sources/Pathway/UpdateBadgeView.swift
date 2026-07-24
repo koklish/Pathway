@@ -310,31 +310,69 @@ struct UpdatePopoverContent: View {
     /// а с ним берёт ровно столько, сколько нужно, — до предела из `frame`.
     @ViewBuilder
     private func notesList(for release: ReleaseInfo) -> some View {
-        let items = ReleaseNotes.parse(release.notes)
-        if items.isEmpty {
-            Text("Описание изменений не приложено.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        } else {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(items, id: \.self) { item in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text("•")
-                                .foregroundStyle(.secondary)
-                            Text(item)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
+        // Тело релиза накопительное — в нём лежат и блоки прошлых выпусков.
+        // Показываем только версии новее установленной: обновляющийся с
+        // предыдущей иначе видел бы всю историю проекта вместо одной новой
+        // строки, а перешагнувший через выпуск — узнает и о пропущенном.
+        let sections = ReleaseNotes.sections(release.notes, after: service.currentVersion)
+        if sections.isEmpty {
+            // Тело без единой секции новее установленного — след правки руками
+            // или неожиданный формат. Показываем плоским списком: пустой поповер
+            // при доступном обновлении выглядел бы поломкой.
+            let items = ReleaseNotes.parse(release.notes)
+            if items.isEmpty {
+                Text("Описание изменений не приложено.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                scrollingNotes {
+                    bullets(items)
                 }
-                .font(.callout)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: Self.maxNotesHeight)
-            .fixedSize(horizontal: false, vertical: true)
+        } else {
+            scrollingNotes {
+                ForEach(Array(sections.enumerated()), id: \.offset) { index, section in
+                    // У первой секции подзаголовка нет: её номер уже назван
+                    // строкой «Доступна версия 1.1.5» прямо над списком, и
+                    // второй раз он читался бы как другая версия.
+                    if index > 0, let version = section.version {
+                        Text("Ранее — \(version.description)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 4)
+                    }
+                    bullets(section.items)
+                }
+            }
         }
+    }
+
+    /// Пункты списка буллетами.
+    @ViewBuilder
+    private func bullets(_ items: [String]) -> some View {
+        ForEach(items, id: \.self) { item in
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("•")
+                    .foregroundStyle(.secondary)
+                Text(item)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    /// Обёртка со скроллом и потолком высоты — общая для обоих способов показа.
+    private func scrollingNotes<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 6) {
+                content()
+            }
+            .font(.callout)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxHeight: Self.maxNotesHeight)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Предел высоты списка заметок — половина экрана, на котором сейчас окно.
