@@ -2,7 +2,7 @@ import AppKit
 import PathwayCore
 import SwiftUI
 
-/// Сайдбар: Избранное, Места (с деревом папок), Сеть, Метки.
+/// Сайдбар: Избранное, Места (с деревом папок), Сеть, Диски.
 struct SidebarView: View {
     let model: BrowserModel
     let connection: ServerConnection
@@ -30,8 +30,9 @@ struct SidebarView: View {
                         }
                     }
 
-                    // «Сеть» живёт между «Местами» и «Метками» — она строится из закладок,
-                    // поэтому вставляется здесь, а не приходит из SidebarModel.
+                    // «Сеть» и «Диски» строятся не из SidebarModel: первая — из
+                    // закладок, вторая — из чисел занятости с обновлением по
+                    // таймеру. Поэтому они вставляются здесь, следом за «Местами».
                     if section.title == "МЕСТА" {
                         SectionHeader(title: "СЕТЬ")
                         NetworkSection(
@@ -41,6 +42,8 @@ struct SidebarView: View {
                             onNewConnection: onNewConnection,
                             onEditSettings: onEditServer
                         )
+
+                        VolumesSection(model: model)
                     }
                 }
             }
@@ -239,7 +242,7 @@ private struct SectionHeader: View {
     }
 }
 
-/// Обычная строка сайдбара: сеть, метка.
+/// Обычная строка сайдбара: сеть.
 private struct SidebarRow: View {
     let item: SidebarItem
     let model: BrowserModel
@@ -248,7 +251,7 @@ private struct SidebarRow: View {
         Button {
             switch item.kind {
             case .favorite: model.navigate(to: item.url)
-            case .place, .tag, .network: break
+            case .place, .network: break
             }
         } label: {
             HStack(spacing: 8) {
@@ -266,19 +269,11 @@ private struct SidebarRow: View {
         .padding(.horizontal, 6)
     }
 
-    @ViewBuilder
     private var icon: some View {
-        if let color = item.tagColor {
-            Circle()
-                .fill(Color(tag: color))
-                .frame(width: 10, height: 10)
-                .frame(width: 16)
-        } else {
-            Image(systemName: item.systemImage)
-                .font(.system(size: 12))
-                .foregroundStyle(item.kind == .favorite ? .secondary : Color.accentColor)
-                .frame(width: 16)
-        }
+        Image(systemName: item.systemImage)
+            .font(.system(size: 12))
+            .foregroundStyle(item.kind == .favorite ? .secondary : Color.accentColor)
+            .frame(width: 16)
     }
 }
 
@@ -465,16 +460,88 @@ extension URL {
     }
 }
 
-private extension Color {
-    init(tag: SidebarItem.TagColor) {
-        switch tag {
-        case .red: self = .red
-        case .orange: self = .orange
-        case .yellow: self = .yellow
-        case .green: self = .green
-        case .blue: self = .blue
-        case .purple: self = .purple
-        case .gray: self = .gray
+/// Секция «Диски»: занятость каждого смонтированного тома полоской.
+private struct VolumesSection: View {
+    let model: BrowserModel
+    @State private var volumes = VolumesModel()
+
+    /// Раз в полминуты. Занятость меняется постоянно, а событие «место
+    /// кончилось» редкое: опрос чаще нагружал бы сетевые тома запросами ради
+    /// цифры, на которую никто не смотрит.
+    private let tick = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        SectionHeader(title: "ДИСКИ")
+
+        ForEach(volumes.volumes) { volume in
+            VolumeRow(volume: volume, model: model)
         }
+
+        // Пустого состояния нет: загрузочный том есть всегда, и текст «дисков
+        // нет» показался бы только при сбое чтения — там он ничего не объясняет.
+        Color.clear
+            .frame(height: 0)
+            .onAppear { volumes.refresh() }
+            .onReceive(tick) { _ in volumes.refresh() }
+    }
+}
+
+/// Строка тома: название, полоска заполнения, свободное место.
+private struct VolumeRow: View {
+    let volume: VolumeUsage
+    let model: BrowserModel
+
+    private var isSelected: Bool { model.pane.path.path == volume.url.path }
+
+    var body: some View {
+        Button {
+            model.navigate(to: volume.url)
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Image(systemName: volume.isNetwork ? "externaldrive.connected.to.line.below" : "internaldrive")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 16)
+                    Text(volume.name)
+                        .font(.system(size: 13))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+
+                // Полоска и подпись отбиты на ширину иконки: иначе они
+                // начинались бы левее названия и строка расползалась бы.
+                VStack(alignment: .leading, spacing: 2) {
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(Color.primary.opacity(0.12))
+                            Capsule()
+                                .fill(volume.isNearlyFull ? Color.red : Color.accentColor)
+                                .frame(width: geometry.size.width * volume.fraction)
+                        }
+                    }
+                    .frame(height: 4)
+
+                    Text(volume.caption)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .padding(.leading, 24)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(0.15))
+            }
+        }
+        .padding(.horizontal, 6)
     }
 }

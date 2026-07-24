@@ -7,12 +7,13 @@ import Testing
 struct SidebarModelTests {
 
     // Здесь только статичные секции. «Сеть» собирает SidebarView из ServerBookmarks,
-    // «Избранное» — из FavoritesStore: обе меняются во время работы.
+    // «Избранное» — из FavoritesStore, «Диски» — из VolumesModel: все три меняются
+    // во время работы.
     @Test("содержит статичные секции в порядке макета")
     func hasStaticSectionsInOrder() {
         let model = SidebarModel()
 
-        #expect(model.sections.map(\.title) == ["МЕСТА", "МЕТКИ"])
+        #expect(model.sections.map(\.title) == ["МЕСТА"])
     }
 
     @Test("места начинаются с «Этот Mac»")
@@ -74,16 +75,6 @@ struct SidebarModelTests {
         }
     }
 
-    @Test("метки содержат стандартные цвета macOS")
-    func tagsContainSystemColors() {
-        let model = SidebarModel()
-
-        let tags = model.items(in: "МЕТКИ").map(\.name)
-
-        #expect(tags.contains("Красный"))
-        #expect(tags.contains("Синий"))
-        #expect(tags.count == 7)
-    }
 }
 
 @MainActor

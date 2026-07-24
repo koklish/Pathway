@@ -8,38 +8,18 @@ public struct SidebarItem: Identifiable, Hashable, Sendable {
     public let name: String
     public let systemImage: String
     public let kind: Kind
-    /// Цвет метки — только для kind == .tag.
-    public let tagColor: TagColor?
 
     public enum Kind: String, Sendable {
         case favorite   // закреплённая папка
         case place      // диск или дерево папок
         case network    // подключение к серверу
-        case tag        // цветная метка
     }
 
-    public enum TagColor: String, Sendable, CaseIterable {
-        case red, orange, yellow, green, blue, purple, gray
-
-        public var label: String {
-            switch self {
-            case .red: "Красный"
-            case .orange: "Оранжевый"
-            case .yellow: "Жёлтый"
-            case .green: "Зелёный"
-            case .blue: "Синий"
-            case .purple: "Фиолетовый"
-            case .gray: "Серый"
-            }
-        }
-    }
-
-    public init(url: URL, name: String, systemImage: String, kind: Kind, tagColor: TagColor? = nil) {
+    public init(url: URL, name: String, systemImage: String, kind: Kind) {
         self.url = url
         self.name = name
         self.systemImage = systemImage
         self.kind = kind
-        self.tagColor = tagColor
     }
 }
 
@@ -122,12 +102,10 @@ public final class SidebarModel {
     // MARK: - Построение секций
 
     /// Секции «Избранное» здесь нет: она реактивна и собирается во вью из FavoritesStore.
+    /// «Сети» тоже — она строится из закладок в SidebarView. «Дисков» нет по третьей
+    /// причине: у них своё обновление по таймеру и не SidebarItem, а числа занятости.
     private static func buildSections() -> [SidebarSection] {
-        [
-            SidebarSection(title: "МЕСТА", items: places()),
-            // Секция «Сеть» строится из закладок в SidebarView — здесь её нет.
-            SidebarSection(title: "МЕТКИ", items: tags()),
-        ]
+        [SidebarSection(title: "МЕСТА", items: places())]
     }
 
     private static func places() -> [SidebarItem] {
@@ -164,17 +142,6 @@ public final class SidebarModel {
         }
     }
 
-    private static func tags() -> [SidebarItem] {
-        SidebarItem.TagColor.allCases.map { color in
-            SidebarItem(
-                url: URL(fileURLWithPath: "/tag/\(color.rawValue)"),
-                name: color.label,
-                systemImage: "circle.fill",
-                kind: .tag,
-                tagColor: color
-            )
-        }
-    }
 }
 
 private extension URL {
