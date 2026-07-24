@@ -110,18 +110,35 @@ struct SidebarExpansionTests {
         #expect(!model.isExpanded(url))
     }
 
-    @Test("раскрывает всю ветку до текущей папки")
-    func revealsPathToCurrentFolder() {
+    /// Раскрытием дерева распоряжается только пользователь. Раньше навигация звала
+    /// reveal, и свёрнутый «Этот Mac» разворачивался обратно при переходе на сетевой
+    /// том или в iCloud Drive — оба лежат внутри корня.
+    @Test("свёрнутый корень не разворачивается сам")
+    func keepsCollapsedRootCollapsed() {
         let model = SidebarModel()
+        let root = URL(fileURLWithPath: "/")
+        #expect(model.isExpanded(root), "по умолчанию корень раскрыт")
 
-        model.reveal(URL(fileURLWithPath: "/Users/alex/Documents/Projects"))
+        model.toggleExpansion(root)
 
-        #expect(model.isExpanded(URL(fileURLWithPath: "/")))
-        #expect(model.isExpanded(URL(fileURLWithPath: "/Users")))
-        #expect(model.isExpanded(URL(fileURLWithPath: "/Users/alex")))
-        #expect(model.isExpanded(URL(fileURLWithPath: "/Users/alex/Documents")))
-        #expect(!model.isExpanded(URL(fileURLWithPath: "/Users/alex/Documents/Projects")),
-                "саму целевую папку раскрывать не нужно")
+        #expect(!model.isExpanded(root))
+        // Единственный способ раскрыть узел обратно — снова позвать toggleExpansion.
+        model.toggleExpansion(root)
+        #expect(model.isExpanded(root))
+    }
+
+    /// Страховка от возврата прежнего поведения: раскрытие вложенного узла
+    /// не должно тянуть за собой родителей.
+    @Test("раскрытие узла не трогает соседние и родительские")
+    func expansionDoesNotCascade() {
+        let model = SidebarModel()
+        let deep = URL(fileURLWithPath: "/Users/alex/Documents")
+
+        model.toggleExpansion(deep)
+
+        #expect(model.isExpanded(deep))
+        #expect(!model.isExpanded(URL(fileURLWithPath: "/Users")))
+        #expect(!model.isExpanded(URL(fileURLWithPath: "/Users/alex")))
     }
 
     @Test("хвостовой слэш не мешает определить раскрытие")

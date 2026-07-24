@@ -39,6 +39,50 @@ struct FavoritesStoreTests {
         #expect(reopened.items.isEmpty)
     }
 
+    /// Записывает избранное так, как его сохранила бы прошлая версия приложения.
+    private func seedStored(_ favorites: [Favorite], into defaults: UserDefaults) {
+        defaults.set(try! JSONEncoder().encode(favorites), forKey: "favorites.items")
+        defaults.set(true, forKey: "favorites.seeded")
+    }
+
+    /// Имя закладки — хранимое поле: у тех, кто пользовался приложением до перевода,
+    /// в UserDefaults лежит английское имя, и defaultName для него больше не зовётся.
+    @Test("английские имена из прошлой версии заменяются переводом")
+    func migratesStoredEnglishNames() {
+        let defaults = makeDefaults()
+        let desktop = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
+        seedStored([Favorite(url: desktop, name: "Desktop")], into: defaults)
+
+        let store = FavoritesStore(defaults: defaults)
+
+        #expect(store.items.first?.name == "Рабочий стол")
+    }
+
+    @Test("имя, заданное пользователем, миграция не трогает")
+    func keepsUserRenamedFavorite() {
+        let defaults = makeDefaults()
+        let desktop = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
+        seedStored([Favorite(url: desktop, name: "Моя рабочая")], into: defaults)
+
+        let store = FavoritesStore(defaults: defaults)
+
+        #expect(store.items.first?.name == "Моя рабочая")
+    }
+
+    @Test("миграция сохраняется, а не повторяется на каждом запуске")
+    func migrationPersists() {
+        let defaults = makeDefaults()
+        let desktop = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
+        seedStored([Favorite(url: desktop, name: "Desktop")], into: defaults)
+
+        _ = FavoritesStore(defaults: defaults)
+        let stored = try! JSONDecoder().decode(
+            [Favorite].self, from: defaults.data(forKey: "favorites.items")!
+        )
+
+        #expect(stored.first?.name == "Рабочий стол")
+    }
+
     @Test("добавленная папка переживает перезапуск")
     func persistsAcrossInstances() {
         let defaults = makeDefaults()

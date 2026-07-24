@@ -83,15 +83,11 @@ public final class SidebarModel {
         }
     }
 
-    /// Раскрывает все родительские узлы, чтобы папка стала видна в дереве.
-    public func reveal(_ url: URL) {
-        var current = url.deletingLastPathComponent()
-        while current.path != "/" {
-            expandedPaths.insert(current.path)
-            current = current.deletingLastPathComponent()
-        }
-        expandedPaths.insert("/")
-    }
+    // Метода reveal здесь намеренно нет. Раньше навигация раскрывала всех родителей
+    // текущей папки, чтобы та была видна в дереве, — и заодно разворачивала узлы,
+    // свёрнутые пользователем вручную: переход на сетевой том или в iCloud Drive
+    // возвращал раскрытым «Этот Mac», потому что оба лежат внутри корня.
+    // Раскрытием дерева распоряжается только пользователь, как в Finder.
 
     // MARK: - Построение секций
 

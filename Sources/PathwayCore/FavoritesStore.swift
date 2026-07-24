@@ -35,6 +35,7 @@ public final class FavoritesStore {
         self.defaults = defaults
         if defaults.bool(forKey: seededKey) {
             items = load()
+            migrateDefaultNames()
         } else {
             items = Self.defaultFavorites()
             defaults.set(true, forKey: seededKey)
@@ -97,6 +98,29 @@ public final class FavoritesStore {
     public func contains(_ url: URL) -> Bool {
         let standardized = Self.standardize(url)
         return items.contains { $0.url.path == standardized.path }
+    }
+
+    /// Подтягивает перевод к закладкам, сохранённым до его появления.
+    ///
+    /// Имя закладки — хранимое поле: у тех, кто пользовался приложением раньше,
+    /// в UserDefaults лежит английское имя, и defaultName для него уже не зовётся.
+    /// Признаком «имя осталось умолчанием» служит совпадение с именем папки на диске —
+    /// отдельного флага для этого не нужно, а заданное пользователем имя с ним
+    /// не совпадает и потому переживает миграцию.
+    private func migrateDefaultNames() {
+        var changed = false
+        for index in items.indices {
+            let item = items[index]
+            guard item.name == item.url.lastPathComponent,
+                  let localized = SystemFolderNames.localizedName(for: item.url),
+                  localized != item.name
+            else { continue }
+            items[index].name = localized
+            changed = true
+        }
+        // Сохраняем сразу, а не при первом изменении списка: иначе перевод жил бы
+        // только в памяти и пересчитывался на каждом запуске.
+        if changed { save() }
     }
 
     // MARK: - Хранение

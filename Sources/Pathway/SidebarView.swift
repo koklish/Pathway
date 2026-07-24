@@ -48,8 +48,7 @@ struct SidebarView: View {
         }
         .scrollContentBackground(.hidden)
         .background(.regularMaterial)
-        .onAppear { sidebar.reveal(model.pane.path) }
-        .onChange(of: model.pane.path) { _, path in sidebar.reveal(path) }
+        // Навигация дерево не трогает: раскрытие — дело пользователя, см. SidebarModel.
     }
 }
 
