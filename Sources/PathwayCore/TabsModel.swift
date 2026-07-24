@@ -28,6 +28,16 @@ public final class TabState: Identifiable {
         guard path.path != "/" else { return "Этот Мас" }
         return SystemFolderNames.displayNameAskingSystem(for: path)
     }
+
+    /// Папка вкладки лежит на сетевом томе. Полоса вкладок рисует по этому
+    /// признаку значок сервера: иначе шара и обычная папка выглядят одинаково,
+    /// а название вроде «Спецификации» ничего о сервере не говорит.
+    public var isOnNetworkVolume: Bool {
+        // Спрашиваем файловую систему на каждое обращение, а не кэшируем при
+        // навигации: том могли отключить мимо приложения, и запомненный признак
+        // остался бы у вкладки, ведущей в никуда.
+        (try? browser.pane.path.resourceValues(forKeys: [.volumeIsLocalKey]))?.volumeIsLocal == false
+    }
 }
 
 /// Список вкладок с активной. Держит инварианты: список не пуст, индекс

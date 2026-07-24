@@ -58,9 +58,7 @@ struct TabBarView: View {
         let isActive = tab.id == tabs.active.id
 
         return HStack(spacing: 6) {
-            Image(nsImage: IconCache.folder)
-                .resizable()
-                .frame(width: 14, height: 14)
+            tabIcon(tab)
                 // Цветная иконка у неактивной вкладки перетягивала бы взгляд
                 // на себя, обесценивая выделение активной.
                 .opacity(isActive ? 1 : 0.55)
@@ -111,6 +109,28 @@ struct TabBarView: View {
                     // против её низа, который упирается в адресную строку.
                     .padding(.bottom, 2)
             }
+        }
+    }
+
+    /// Значок вкладки: диск для сетевого тома, папка для всего остального.
+    ///
+    /// Сетевой — символом, а не иконкой тома от системы: `NSWorkspace` отдаёт
+    /// для шары ту же папку, что и для локального каталога, и различить их в
+    /// полосе было бы нечем.
+    @ViewBuilder
+    private func tabIcon(_ tab: TabState) -> some View {
+        if tab.isOnNetworkVolume {
+            Image(systemName: "externaldrive.connected.to.line.below")
+                // Символ шире папки при равной высоте, поэтому размер задан
+                // шрифтом, а не рамкой: растянутый до 14×14 квадрата, он
+                // сплющился бы по горизонтали.
+                .font(.system(size: 12))
+                .foregroundStyle(.tint)
+                .frame(width: 16, height: 14)
+        } else {
+            Image(nsImage: IconCache.folder)
+                .resizable()
+                .frame(width: 14, height: 14)
         }
     }
 

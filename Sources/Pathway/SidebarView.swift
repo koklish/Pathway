@@ -48,7 +48,15 @@ struct SidebarView: View {
         }
         .scrollContentBackground(.hidden)
         .background(.regularMaterial)
-        // Навигация дерево не трогает: раскрытие — дело пользователя, см. SidebarModel.
+        .onAppear { revealCurrentFolder() }
+        .onChange(of: model.pane.path) { _, _ in revealCurrentFolder() }
+    }
+
+    /// Показывает текущую папку в дереве, не трогая соседние корни: стоя на сетевом
+    /// томе, разворачивать «Этот Mac» незачем — см. SidebarModel.reveal.
+    private func revealCurrentFolder() {
+        let mounts = connection.mounted.networkVolumes.map(\.mountPoint)
+        sidebar.reveal(model.pane.path, roots: sidebar.treeRoots(networkMounts: mounts))
     }
 }
 

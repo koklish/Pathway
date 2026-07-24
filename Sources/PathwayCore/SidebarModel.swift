@@ -83,11 +83,41 @@ public final class SidebarModel {
         }
     }
 
-    // Метода reveal здесь намеренно нет. Раньше навигация раскрывала всех родителей
-    // текущей папки, чтобы та была видна в дереве, — и заодно разворачивала узлы,
-    // свёрнутые пользователем вручную: переход на сетевой том или в iCloud Drive
-    // возвращал раскрытым «Этот Mac», потому что оба лежат внутри корня.
-    // Раскрытием дерева распоряжается только пользователь, как в Finder.
+    /// Корни деревьев в сайдбаре: пункты «Мест» плюс переданные точки монтирования
+    /// сетевых томов. Последние приходят снаружи — секция «Сеть» строится не здесь.
+    public func treeRoots(networkMounts: [URL] = []) -> [URL] {
+        items(in: "МЕСТА").map(\.url) + networkMounts
+    }
+
+    /// Раскрывает ветку до текущей папки — но только внутри того корня, которому
+    /// она принадлежит.
+    ///
+    /// Корень здесь — пункт сайдбара, от которого растёт дерево: «Этот Mac» («/»),
+    /// iCloud Drive, подключённый том. Ограничение существует потому, что пути
+    /// вложены, а пункты — нет: сетевой том лежит в /Volumes, iCloud Drive внутри
+    /// домашней папки, и подъём до «/» разворачивал бы «Этот Mac» при каждом
+    /// переходе на диск — в том числе свёрнутый пользователем намеренно.
+    ///
+    /// Из нескольких подходящих корней берётся самый глубокий: «/» содержит вообще
+    /// всё, и без этого ветка всегда росла бы от него.
+    public func reveal(_ url: URL, roots: [URL]) {
+        let target = url.standardizedFileURL
+        guard let root = roots
+            .map(\.standardizedFileURL)
+            .filter({ target.path == $0.path || target.isInside($0) })
+            .max(by: { $0.pathComponents.count < $1.pathComponents.count })
+        else { return }
+
+        expandedPaths.insert(root.path)
+
+        // От целевой папки вверх до корня: сама папка не раскрывается — важно
+        // увидеть её в дереве, а не её содержимое.
+        var current = target.deletingLastPathComponent()
+        while current.path != root.path, current.isInside(root) {
+            expandedPaths.insert(current.path)
+            current = current.deletingLastPathComponent()
+        }
+    }
 
     // MARK: - Построение секций
 
@@ -144,5 +174,18 @@ public final class SidebarModel {
                 tagColor: color
             )
         }
+    }
+}
+
+private extension URL {
+    /// Лежит ли путь внутри указанной папки.
+    ///
+    /// Сравнение по компонентам, а не префиксом строки: «/Volumes/Данные2» начинается
+    /// с «/Volumes/Данные», но вложенной папкой не является.
+    func isInside(_ folder: URL) -> Bool {
+        let parts = standardizedFileURL.pathComponents
+        let folderParts = folder.standardizedFileURL.pathComponents
+        guard parts.count > folderParts.count else { return false }
+        return Array(parts.prefix(folderParts.count)) == folderParts
     }
 }
