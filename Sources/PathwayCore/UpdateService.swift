@@ -52,9 +52,19 @@ public final class UpdateService {
     /// бы две даты последней проверки, расходящиеся при первой же неудаче.
     public private(set) var lastCheck: Date?
 
+    /// Обратный канал «Core просит UI»: поднят — значит поповер версии нужно
+    /// раскрыть. Тот же приём, что у `AppState.pendingRename`; поднимает его
+    /// делегат приложения, поймавший клик по баннеру уведомления, а сбрасывает
+    /// вью в момент показа.
+    ///
+    /// `Bool`, а не счётчик: повторный клик по тому же баннеру при уже открытом
+    /// поповере ничего делать не должен, и сброс на показе даёт это даром.
+    public private(set) var showPopoverRequest = false
+
     private let fetcher: any ReleaseFetching
     private let installer: any UpdateInstalling
     private let terminator: any AppTerminating
+    private let notifier: any UpdateNotifying
     private let defaults: UserDefaults
     private let session: URLSession
 
@@ -63,19 +73,26 @@ public final class UpdateService {
     /// авторизации 60 запросов в час на адрес, и все коллеги могут сидеть за одним NAT.
     private static let checkInterval: TimeInterval = 24 * 60 * 60
 
+    /// `notifier` по умолчанию nil, а не готовый `SystemUpdateNotifier`:
+    /// боевому нотификатору нужна текущая версия, а она выясняется здесь же, из
+    /// Info.plist. Значение по умолчанию вычислялось бы до этого момента и не
+    /// имело бы к ней доступа, поэтому подстановка отложена в тело init.
     public init(
         currentVersion: AppVersion? = nil,
         fetcher: any ReleaseFetching = GitHubReleaseFetcher(),
         installer: any UpdateInstalling = BundleUpdateInstaller(),
         terminator: any AppTerminating = AppKitTerminator(),
+        notifier: (any UpdateNotifying)? = nil,
         defaults: UserDefaults = .standard,
         session: URLSession = .shared
     ) {
         let bundled = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-        self.currentVersion = currentVersion ?? bundled.flatMap(AppVersion.init) ?? AppVersion("0.0.0")!
+        let version = currentVersion ?? bundled.flatMap(AppVersion.init) ?? AppVersion("0.0.0")!
+        self.currentVersion = version
         self.fetcher = fetcher
         self.installer = installer
         self.terminator = terminator
+        self.notifier = notifier ?? SystemUpdateNotifier(currentVersion: version)
         self.defaults = defaults
         self.session = session
         self.lastCheck = defaults.object(forKey: Self.lastCheckKey) as? Date
@@ -83,15 +100,57 @@ public final class UpdateService {
 
     // MARK: - Проверка
 
-    /// Проверка при запуске и раз в сутки. Неудача остаётся незамеченной.
+    /// Проверка при старте процесса. Ограничение суток не соблюдает намеренно:
+    /// запуск приложения случается редко, и человек в этот момент ждёт свежих
+    /// данных. Пока эта проверка ходила через `checkAutomatically`, второй за
+    /// день запуск GitHub не спрашивал вовсе — «включил приложение и узнал
+    /// о новой версии» не работало.
+    public func checkOnLaunch() async {
+        await check(silent: true, notifyOnFind: true)
+    }
+
+    /// Периодическая проверка — не чаще раза в сутки. Неудача остаётся
+    /// незамеченной. Сейчас её никто не зовёт: она осталась готовой к фоновой
+    /// проверке во время работы приложения, где лимит GitHub (60 запросов в час
+    /// на адрес, а коллеги могут сидеть за одним NAT) снова станет важен.
     public func checkAutomatically() async {
         guard shouldCheckNow else { return }
-        await check(silent: true)
+        await check(silent: true, notifyOnFind: true)
     }
 
     /// Проверка по просьбе пользователя: игнорирует ограничение и показывает ошибку.
+    ///
+    /// Баннер не показывает: человек нажал «Проверить сейчас» в открытом
+    /// поповере и результат увидит там же — системное уведомление поверх него
+    /// сообщало бы о том, что уже перед глазами.
     public func checkManually() async {
-        await check(silent: false)
+        await check(silent: false, notifyOnFind: false)
+    }
+
+    /// Разовый запрос разрешения на уведомления. Зовётся делегатом приложения
+    /// при запуске: разрешение — событие процесса, а не проверки обновлений.
+    ///
+    /// Своего флага «уже спрашивали» нет. `UNUserNotificationCenter` показывает
+    /// системный диалог ровно один раз и при повторных вызовах молча возвращает
+    /// принятое решение; флаг в `UserDefaults` был бы вторым источником правды
+    /// о том, что система и так помнит, и разошёлся бы с ней при сбросе
+    /// разрешений в Настройках.
+    public func requestNotificationAuthorization() async {
+        await notifier.requestAuthorization()
+    }
+
+    // MARK: - Обратный канал к поповеру
+
+    /// Просьба раскрыть поповер версии — приходит от делегата приложения,
+    /// поймавшего клик по баннеру уведомления.
+    public func requestPopover() {
+        showPopoverRequest = true
+    }
+
+    /// Поповер раскрыт, просьба исполнена. Без сброса вью открывало бы его
+    /// заново на каждой перерисовке чипа.
+    public func popoverShown() {
+        showPopoverRequest = false
     }
 
     private var shouldCheckNow: Bool {
@@ -99,7 +158,7 @@ public final class UpdateService {
         return Date().timeIntervalSince(lastCheck) >= Self.checkInterval
     }
 
-    private func check(silent: Bool) async {
+    private func check(silent: Bool, notifyOnFind: Bool) async {
         // Пока идёт скачивание или проверка, проверять нечего — иначе состояние
         // перетрётся, а повторный клик по «Проверить обновления» запустит
         // параллельный запрос к GitHub с гонкой за финальный state.
@@ -123,6 +182,11 @@ public final class UpdateService {
                 return
             }
             state = .available(release)
+            // `await`, а не `Task { }` без ожидания: последнее превратило бы
+            // проверку «уведомил про найденную версию» в гонку. Задержки на
+            // глаз нет — `UNUserNotificationCenter.add` возвращается сразу,
+            // доставку система берёт на себя.
+            if notifyOnFind { await notifier.notify(about: release) }
         } catch {
             // Нет сети — обычное дело, и само по себе не повод беспокоить человека.
             // Сказать стоит только тому, кто проверку и запросил.

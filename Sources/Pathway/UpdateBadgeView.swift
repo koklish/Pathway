@@ -29,7 +29,16 @@ struct UpdateBadgeView: View {
         // презентации при этом гибнет, и SwiftUI откатывает isPresented в
         // false. NSPopover держится за NSView чипа, а не за SwiftUI-обёртку, и
         // переживает эту перестройку.
-        BadgeChipHost(chip: { chip }, popover: { UpdatePopoverContent(service: service) }) {
+        // showPopoverRequest — обратный канал от делегата, поймавшего клик по
+        // баннеру уведомления. Читается здесь, в теле вью: иначе SwiftUI не
+        // считал бы его зависимостью и не звал бы updateNSView на его подъём,
+        // а именно там поповер и раскрывается.
+        BadgeChipHost(
+            chip: { chip },
+            popover: { UpdatePopoverContent(service: service) },
+            showRequest: service.showPopoverRequest,
+            onShown: { service.popoverShown() }
+        ) {
             // Клик — это и есть просьба проверить: человек открыл поповер
             // именно затем, чтобы узнать про обновления. Проверка не
             // запускается поверх уже идущей работы — сервис отсекает такое
@@ -447,6 +456,11 @@ struct UpdatePopoverContent: View {
 private struct BadgeChipHost<Chip: View, Popover: View>: NSViewRepresentable {
     @ViewBuilder let chip: () -> Chip
     @ViewBuilder let popover: () -> Popover
+    /// Просьба раскрыть поповер снаружи — от клика по баннеру уведомления.
+    let showRequest: Bool
+    /// Зовётся сразу после показа, чтобы сбросить просьбу: иначе поповер
+    /// открывался бы заново на каждой следующей перерисовке чипа.
+    let onShown: () -> Void
     let onOpen: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -485,6 +499,15 @@ private struct BadgeChipHost<Chip: View, Popover: View>: NSViewRepresentable {
         (context.coordinator.chipHost as? NSHostingView<Chip>)?.rootView = chip()
         context.coordinator.popover = popover
         context.coordinator.onOpen = onOpen
+
+        guard showRequest else { return }
+        // Сброс до показа, а не после: показ поповера меняет фокус окна, а это
+        // перестраивает содержимое тулбара и зовёт updateNSView повторно —
+        // со сбросом после мы успели бы войти сюда второй раз с ещё поднятым
+        // флагом. Метод показа при уже открытом поповере ничего не делает, так
+        // что лишний заход безвреден, но флаг обязан погаснуть с первого раза.
+        onShown()
+        context.coordinator.showPopover(from: nsView)
     }
 
     @MainActor
@@ -507,7 +530,18 @@ private struct BadgeChipHost<Chip: View, Popover: View>: NSViewRepresentable {
                 shown.close()
                 return
             }
+            show(from: view)
+        }
 
+        /// Раскрыть поповер, если он ещё не открыт. Отдельный метод, а не
+        /// `togglePopover`: клик по баннеру уведомления обязан показать поповер,
+        /// а `toggle` при уже открытом закрыл бы то, что должен показать.
+        func showPopover(from view: NSView) {
+            if let shown, shown.isShown { return }
+            show(from: view)
+        }
+
+        private func show(from view: NSView) {
             onOpen()
 
             let popover = NSPopover()
