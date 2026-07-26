@@ -37,7 +37,7 @@ public struct Shortcut: Sendable, Equatable {
 
 public enum CommandID: String, CaseIterable, Sendable {
     // Файл
-    case newFolder, open, rename, compress, extractHere, revealInFinder, openTerminal, openClaude
+    case newFolder, open, rename, compress, extractHere, properties, revealInFinder, openTerminal, openClaude
     // Правка
     case copy, cut, paste, copyPath, selectAll, moveToTrash
     // Вид
@@ -129,6 +129,18 @@ public enum CommandRegistry {
                 return items.count == 1 && ArchiveService.isArchive(items[0].url)
             },
             run: { state in state.browser.selectedItems.first.map { state.browser.extract($0) } }
+        ),
+        AppCommand(
+            id: .properties,
+            title: "Свойства",
+            // ⌘I — как в Finder и Проводнике Windows; сочетание в проекте
+            // свободно, стандартного системного пункта с ним нет.
+            shortcut: Shortcut(.character("i"), .command),
+            icon: "info.circle",
+            // Не в writesToDisk: только чтение, работает и на томе только для
+            // чтения. Гаснет при вводе текста и на пустом выделении.
+            isEnabled: { !$0.isEditingText && !$0.browser.selectedItems.isEmpty },
+            run: { $0.pendingProperties = PropertiesBuilder.subject(for: $0.browser.selectedItems) }
         ),
         AppCommand(
             id: .revealInFinder,

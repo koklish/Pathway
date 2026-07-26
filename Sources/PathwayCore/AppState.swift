@@ -49,6 +49,8 @@ public final class AppState {
     public var pendingCompress: [FileItem]?
     /// Адресная строка должна перейти в режим ввода.
     public var pendingEditPath = false
+    /// Субъект для диалога свойств; nil — диалог закрыт.
+    public var pendingProperties: PropertiesSubject?
 
     public init(
         path: URL = FileManager.default.homeDirectoryForCurrentUser,

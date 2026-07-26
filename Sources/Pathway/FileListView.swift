@@ -593,6 +593,7 @@ struct FileListView: NSViewRepresentable {
 
             if item != nil {
                 menu.addItem(.separator())
+                add(to: menu, .properties, #selector(menuProperties))
                 add(to: menu, .moveToTrash, #selector(menuMoveToTrash))
             }
         }
@@ -715,6 +716,14 @@ struct FileListView: NSViewRepresentable {
             let targets = clickedTargets
             guard !targets.isEmpty else { return }
             onCompress(targets)
+        }
+
+        // Свойства от clickedTargets, а не от выделения: правый клик по
+        // невыделенному файлу действует на него — как остальные пункты меню.
+        @objc private func menuProperties() {
+            let targets = clickedTargets
+            guard !targets.isEmpty else { return }
+            appState.pendingProperties = PropertiesBuilder.subject(for: targets)
         }
 
         @objc private func menuExtractHere() {

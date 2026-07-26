@@ -161,6 +161,15 @@ struct MainWindow: View {
                     .modalTextEditing(appState)
             }
         }
+        // Свойства: только чтение, поэтому без .modalTextEditing — редактируемых
+        // полей нет, поднимать isEditingText незачем.
+        .sheet(isPresented: Binding(
+            get: { appState.pendingProperties != nil }, set: { if !$0 { appState.pendingProperties = nil } }
+        )) {
+            if let subject = appState.pendingProperties {
+                PropertiesDialogView(subject: subject) { appState.pendingProperties = nil }
+            }
+        }
         // Распаковка наткнулась на зашифрованный архив — спрашиваем пароль.
         .sheet(isPresented: Binding(
             get: { model.passwordRequest != nil }, set: { if !$0 { model.cancelPasswordRequest() } }
