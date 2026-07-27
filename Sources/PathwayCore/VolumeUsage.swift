@@ -10,12 +10,31 @@ public struct VolumeUsage: Identifiable, Equatable, Sendable {
     public let totalBytes: Int64
     public let availableBytes: Int64
 
-    public init(url: URL, name: String, isNetwork: Bool, totalBytes: Int64, availableBytes: Int64) {
+    /// Числам объёма можно верить.
+    ///
+    /// FTP-том macOS монтирует через NFS-мост, и тот отдаёт постоянную
+    /// заглушку — ровно 1 ГиБ общего, ноль свободного, — а не состояние
+    /// сервера. Числа правдоподобны, поэтому отличить их можно только по
+    /// признаку от файловой системы; его добывает `VolumeUsageReader`.
+    public let hasReliableUsage: Bool
+
+    /// Умолчание `true`, а не обязательный аргумент: недостоверность —
+    /// исключение, которое объявляется явно. Иначе неудача statfs или новый
+    /// вызов инициализатора молча гасили бы полоски у всех дисков разом.
+    public init(
+        url: URL,
+        name: String,
+        isNetwork: Bool,
+        totalBytes: Int64,
+        availableBytes: Int64,
+        hasReliableUsage: Bool = true
+    ) {
         self.url = url
         self.name = name
         self.isNetwork = isNetwork
         self.totalBytes = totalBytes
         self.availableBytes = availableBytes
+        self.hasReliableUsage = hasReliableUsage
     }
 
     /// Занято байт. Считается вычитанием, а не берётся у системы напрямую: на
@@ -28,10 +47,14 @@ public struct VolumeUsage: Identifiable, Equatable, Sendable {
     /// отрисовки, а не кривая картинка.
     public var usedBytes: Int64 { max(0, totalBytes - availableBytes) }
 
-    /// Доля занятого, 0…1. Ноль при нулевом объёме: FTP-том отдаёт нули, и
-    /// деление дало бы NaN, роняющий отрисовку полоски целиком.
+    /// Доля занятого, 0…1. Ноль при нулевом объёме: деление дало бы NaN,
+    /// роняющий отрисовку полоски целиком.
+    ///
+    /// Ноль и при недостоверных числах: заглушка FTP означала бы полную
+    /// занятость, и любой читатель доли принял бы её за правду. Ширину полоски
+    /// в этом случае задаёт вью, а не эта величина.
     public var fraction: Double {
-        guard totalBytes > 0 else { return 0 }
+        guard hasReliableUsage, totalBytes > 0 else { return 0 }
         return min(1, Double(usedBytes) / Double(totalBytes))
     }
 
@@ -39,11 +62,18 @@ public struct VolumeUsage: Identifiable, Equatable, Sendable {
     /// оформление. Строгое сравнение — ровно на пороге ещё не тревога, иначе
     /// краснел бы том со свободной десятой частью, и красный перестал бы
     /// что-то значить.
+    ///
+    /// У тома с недостоверными числами тревоги нет по определению: заглушка
+    /// FTP постоянна, и красная полоска горела бы на нём всегда.
     public var isNearlyFull: Bool { fraction > 0.9 }
 
     /// Подпись под полоской — «Свободно 84,9 ГБ из 315,9 ГБ».
+    ///
+    /// У недостоверного тома чисел нет вовсе: «Свободно 0 Б из 1,0 ГБ» —
+    /// не осторожная оценка, а неправда о сервере.
     public var caption: String {
-        "Свободно \(Self.size(max(0, availableBytes))) из \(Self.size(max(0, totalBytes)))"
+        guard hasReliableUsage else { return "Объём неизвестен" }
+        return "Свободно \(Self.size(max(0, availableBytes))) из \(Self.size(max(0, totalBytes)))"
     }
 
     /// Объём по-русски.
@@ -118,9 +148,29 @@ public struct VolumeUsageReader: VolumeUsageReading {
                 // в иконке безобиднее пропущенного диска.
                 isNetwork: !(values.volumeIsLocal ?? true),
                 totalBytes: Int64(total),
-                availableBytes: Int64(available)
+                availableBytes: Int64(available),
+                hasReliableUsage: Self.hasReliableUsage(at: url)
             )
         }
+    }
+
+    /// Числам объёма можно верить.
+    ///
+    /// Признак — ненулевое число инод. У живой файловой системы оно ненулевое
+    /// всегда: корневой каталог занимает иноду сам. У FTP-тома оно ноль, как и
+    /// всё остальное в его ответе, — это и выдаёт заглушку, потому что объём и
+    /// свободное место она заполняет правдоподобными числами (ровно 1 ГиБ и
+    /// ноль), неотличимыми от настоящего забитого диска.
+    ///
+    /// Через statfs, а не URLResourceKey: числа инод тот не отдаёт вовсе.
+    ///
+    /// Неудача считается достоверностью: том мог отвалиться между
+    /// перечислением и опросом, и обратное решение гасило бы полоски у всех
+    /// дисков при первой же гонке.
+    static func hasReliableUsage(at url: URL) -> Bool {
+        var info = statfs()
+        guard statfs(url.path, &info) == 0 else { return true }
+        return info.f_files > 0
     }
 
     /// Имя тома без учётных данных.

@@ -5,6 +5,10 @@ import SwiftUI
 /// между хлебными крошками и вводом текста (как в Проводнике Windows).
 struct AddressBarView: View {
     let model: BrowserModel
+    /// Поиск стоит в этой же строке, а не отдельным вью в MainWindow: там ему
+    /// пришлось бы повторять вертикальные отступы строки, и поля разъезжались
+    /// бы по высоте при любой правке одного из них.
+    let search: SearchModel
     @Environment(AppState.self) private var appState
 
     @State private var isEditing = false
@@ -15,6 +19,7 @@ struct AddressBarView: View {
         HStack(spacing: 8) {
             navigationButtons
             pathControl
+            SearchFieldView(search: search, directory: model.pane.path)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

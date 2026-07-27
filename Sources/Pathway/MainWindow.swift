@@ -46,28 +46,47 @@ struct MainWindow: View {
             VStack(spacing: 0) {
                 TabBarView(tabs: appState.tabs)
                 Divider()
-                AddressBarView(model: model)
+                AddressBarView(model: model, search: appState.search)
                     .onboardingTarget(.addressBar)
                 Divider()
-                FileListView(
-                    model: model, actions: actions, appState: appState,
-                    renamingItem: $state.pendingRename
-                ) { items in
-                    appState.pendingCompress = items
+                if appState.search.isActive {
+                    SearchResultsView(search: appState.search, model: model)
+                } else {
+                    FileListView(
+                        model: model, actions: actions, appState: appState,
+                        renamingItem: $state.pendingRename
+                    ) { items in
+                        appState.pendingCompress = items
+                    }
+                    // Своя таблица на вкладку. Без этого NSScrollView был бы
+                    // один на всех, и переключение вкладок роняло бы позицию
+                    // скролла в ту, что осталась от прошлой папки: скролл
+                    // принадлежит вью, а не модели, и переприсваиванием model
+                    // не восстанавливается.
+                    .id(appState.tabs.active.id)
                 }
-                // Своя таблица на вкладку. Без этого NSScrollView был бы один
-                // на всех, и переключение вкладок роняло бы позицию скролла в
-                // ту, что осталась от прошлой папки: скролл принадлежит вью,
-                // а не модели, и переприсваиванием model не восстанавливается.
-                .id(appState.tabs.active.id)
                 Divider()
                 StatusBarView(model: model)
             }
             // Клик по пустому месту — отступам, статус-бару, фону — снимает фокус
             // с адресной строки. Без этого поле ввода отпускает фокус только на
             // Enter, Esc или переходе в другую папку.
+            //
+            // При открытой выдаче поиска ловец выключен: SwiftUI List рисует
+            // выделение, только владея фокусом, и сброс в том же цикле событий
+            // гасил бы подсветку мгновенно — клик выглядел бы как попадание в
+            // мёртвую область. NSTableView в списке файлов от этого не страдает:
+            // он держит выделение независимо от фокуса.
             .background {
-                ClickCatcher { NSApp.keyWindow?.makeFirstResponder(nil) }
+                if !appState.search.isActive {
+                    ClickCatcher { NSApp.keyWindow?.makeFirstResponder(nil) }
+                }
+            }
+            // Переход в другую папку закрывает поиск: выдача относится к папке,
+            // в которой искали, и оставлять её поверх новой — значит показывать
+            // пути, ведущие не туда, куда пришли.
+            .onChange(of: model.pane.path) { _, _ in
+                if appState.search.isActive { appState.search.cancel() }
             }
         }
         // Обучающий тур поверх всего окна. Якоря целей собраны из дочерних вью

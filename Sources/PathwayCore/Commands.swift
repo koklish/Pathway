@@ -43,7 +43,7 @@ public enum CommandID: String, CaseIterable, Sendable {
     // Вид
     case toggleHiddenFiles, refresh
     // Переход
-    case goBack, goForward, goUp, editPath, toggleFavorite
+    case goBack, goForward, goUp, editPath, findInFolder, toggleFavorite
     // Вкладки
     case newTab, closeTab, nextTab, previousTab, openInNewTab
 }
@@ -285,6 +285,14 @@ public enum CommandRegistry {
             icon: nil,
             isEnabled: { _ in true },
             run: { $0.pendingEditPath = true }
+        ),
+        AppCommand(
+            id: .findInFolder,
+            title: "Найти в папке…",
+            shortcut: Shortcut(.character("f"), .command),
+            icon: "magnifyingglass",
+            isEnabled: { _ in true },
+            run: { $0.pendingSearch = true }
         ),
         AppCommand(
             id: .toggleFavorite,

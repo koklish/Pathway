@@ -26,6 +26,72 @@ struct ArchiveServiceTests {
         }
     }
 
+    // MARK: - Извлечение одной записи
+
+    @Test("извлекает одну запись архива и возвращает путь к ней")
+    func extractsSingleEntry() async throws {
+        try await withTempDirAsync { dir in
+            let folder = try makeSampleFolder(in: dir)
+            let archive = try await ArchiveService().create(
+                items: [folder], format: .zip, password: nil, archiveName: "Материалы", in: dir)
+
+            let file = try await ArchiveService().extractEntry("Материалы/файл.txt", from: archive)
+
+            #expect(try String(contentsOf: file, encoding: .utf8) == "привет")
+        }
+    }
+
+    @Test("извлекает запись с кириллицей и пробелами в имени")
+    func extractsEntryWithCyrillicName() async throws {
+        // Отбор средствами bsdtar на таких именах не работает при запуске из
+        // процесса приложения, поэтому запись отбирается уже на диске. Тест
+        // стережёт именно это: без него регрессия проявилась бы только на
+        // русских файлах, то есть у всех.
+        try await withTempDirAsync { dir in
+            let folder = dir.appendingPathComponent("Мои документы")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data("содержимое".utf8).write(to: folder.appendingPathComponent("счёт № 5.txt"))
+            let archive = try await ArchiveService().create(
+                items: [folder], format: .zip, password: nil, archiveName: "Архив", in: dir)
+
+            let file = try await ArchiveService().extractEntry(
+                "Мои документы/счёт № 5.txt", from: archive)
+
+            #expect(try String(contentsOf: file, encoding: .utf8) == "содержимое")
+        }
+    }
+
+    @Test("извлечение несуществующей записи даёт ошибку, а не пустой файл")
+    func failsOnMissingEntry() async throws {
+        try await withTempDirAsync { dir in
+            let folder = try makeSampleFolder(in: dir)
+            let archive = try await ArchiveService().create(
+                items: [folder], format: .zip, password: nil, archiveName: "Материалы", in: dir)
+
+            await #expect(throws: ArchiveError.self) {
+                try await ArchiveService().extractEntry("Материалы/нет-такого.txt", from: archive)
+            }
+        }
+    }
+
+    @Test("извлечённая запись не затирает одноимённую из другого архива")
+    func extractsToSeparateFolders() async throws {
+        // Временная папка своя на каждое извлечение: иначе «отчёт.txt» из двух
+        // архивов открывался бы один и тот же.
+        try await withTempDirAsync { dir in
+            let folder = try makeSampleFolder(in: dir)
+            let first = try await ArchiveService().create(
+                items: [folder], format: .zip, password: nil, archiveName: "Первый", in: dir)
+            let second = try await ArchiveService().create(
+                items: [folder], format: .zip, password: nil, archiveName: "Второй", in: dir)
+
+            let a = try await ArchiveService().extractEntry("Материалы/файл.txt", from: first)
+            let b = try await ArchiveService().extractEntry("Материалы/файл.txt", from: second)
+
+            #expect(a != b)
+        }
+    }
+
     // MARK: - Вспомогательное
 
     /// Создаёт папку `source` с файлом и подпапкой — материал для архивации.

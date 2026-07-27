@@ -21,7 +21,10 @@ public final class PaneState {
 
     /// Приводит URL к каноничному виду: без хвостового слэша, чтобы один и тот же
     /// путь всегда сравнивался как равный (deletingLastPathComponent добавляет слэш).
-    private static func normalize(_ url: URL) -> URL {
+    /// Канонизирует путь так же, как DirectoryLoader: `/var` → `/private/var`.
+    /// Открыт наружу, потому что сравнивать с `path` приходится и снаружи —
+    /// склеенный вручную URL иначе не совпал бы с загруженным.
+    static func normalize(_ url: URL) -> URL {
         URL(fileURLWithPath: url.path)
     }
 

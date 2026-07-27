@@ -133,6 +133,9 @@ struct FileListView: NSViewRepresentable {
         context.coordinator.rebind(renamingItem: $renamingItem)
         context.coordinator.reloadIfContentChanged()
         context.coordinator.syncSelection()
+        // После syncSelection: прокрутка ищет строку в уже синхронизированной
+        // таблице, а выделение к этому моменту стоит.
+        context.coordinator.revealIfNeeded()
         context.coordinator.beginRenamingIfNeeded()
     }
 
@@ -343,6 +346,18 @@ struct FileListView: NSViewRepresentable {
         /// SwiftUI зовёт updateNSView на любое изменение модели, поэтому редактирование
         /// запускается один раз на элемент: иначе повторный makeFirstResponder сбивал бы
         /// курсор и выделение посреди набора имени.
+        /// Прокручивает к файлу, к которому просили перейти из выдачи поиска.
+        ///
+        /// Прокрутка принадлежит NSScrollView, из модели её не сделать —
+        /// поэтому запрос, а не свойство. Выделение к этому моменту уже стоит:
+        /// его выставила модель, а syncSelection перенёс в таблицу.
+        func revealIfNeeded() {
+            guard let target = model.revealRequest, let table else { return }
+            model.revealRequest = nil
+            guard let row = model.items.firstIndex(where: { $0.url == target }) else { return }
+            table.scrollRowToVisible(row)
+        }
+
         func beginRenamingIfNeeded() {
             guard let renaming = renamingItem, renaming != editingItem, let table else { return }
             guard let row = model.items.firstIndex(where: { $0.url == renaming }) else { return }

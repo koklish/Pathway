@@ -511,6 +511,13 @@ private struct VolumeRow: View {
 
     private var isSelected: Bool { model.pane.path.path == volume.url.path }
 
+    /// Серый читается как «состояние неизвестно» — акцентный цвет на всю
+    /// ширину означал бы пустой том, красный вернул бы ложную тревогу.
+    private var barColor: Color {
+        guard volume.hasReliableUsage else { return Color.secondary.opacity(0.35) }
+        return volume.isNearlyFull ? Color.red : Color.accentColor
+    }
+
     var body: some View {
         Button {
             model.navigate(to: volume.url)
@@ -535,9 +542,16 @@ private struct VolumeRow: View {
                         ZStack(alignment: .leading) {
                             Capsule()
                                 .fill(Color.primary.opacity(0.12))
+                            // У тома с недостоверным объёмом полоска серая и во
+                            // всю ширину: она остаётся ради ровного шага строк
+                            // в секции, но не притворяется измерением. Ширина
+                            // берётся не из fraction — та у такого тома ноль,
+                            // и полоска исчезла бы совсем.
                             Capsule()
-                                .fill(volume.isNearlyFull ? Color.red : Color.accentColor)
-                                .frame(width: geometry.size.width * volume.fraction)
+                                .fill(barColor)
+                                .frame(width: volume.hasReliableUsage
+                                    ? geometry.size.width * volume.fraction
+                                    : geometry.size.width)
                         }
                     }
                     .frame(height: 4)

@@ -33,6 +33,14 @@ public final class BrowserModel {
     /// true, пока идёт чтение папки — для индикатора в интерфейсе.
     public private(set) var isLoading = false
 
+    /// Файл, к которому таблица должна прокрутиться. Обратный канал «Core
+    /// просит UI»: прокрутка принадлежит NSScrollView, из модели её не сделать.
+    /// Вью сбрасывает поле, выполнив запрос.
+    public var revealRequest: URL?
+
+    /// Файл, ожидающий выделения после загрузки папки.
+    private var pendingReveal: URL?
+
     /// Открыт инлайн-редактор имени. Поднимает его вью на время правки.
     ///
     /// Внешнее обновление при поднятом флаге не трогает список: перезагрузка
@@ -211,8 +219,41 @@ public final class BrowserModel {
             // событие, пришедшее на недочитанную папку, дало бы дифф против
             // неполного списка и «потеряло» бы ещё не показанные файлы.
             guard !Task.isCancelled, pane.path == directory else { return }
+            applyPendingReveal()
             startWatching(directory)
         }
+    }
+
+    /// Переходит в папку файла и выделяет его.
+    ///
+    /// Нужен переходу из выдачи поиска: сама по себе навигация оставила бы
+    /// человека в папке с сотней файлов и без подсказки, какой из них нашёлся.
+    ///
+    /// Выделение отложено, а не выставлено здесь же: список грузится
+    /// асинхронно, и `selection` до его прихода указывал бы на URL, которого
+    /// в `items` ещё нет. Вдобавок `pane.navigate` очищает выделение сам.
+    public func navigate(to directory: URL, revealing file: URL) {
+        pendingReveal = file
+        // Уже в нужной папке — навигации не будет, а с ней и загрузки, которая
+        // выполнила бы запрос. Тогда выделяем сразу.
+        guard PaneState.normalize(directory) != pane.path else {
+            applyPendingReveal()
+            return
+        }
+        navigate(to: directory)
+    }
+
+    /// Выполняет отложенное выделение, если файл дошёл до списка.
+    ///
+    /// Промах не считается ошибкой: файл могли удалить между поиском и
+    /// переходом, и папка всё равно открылась — это лучше, чем алерт.
+    private func applyPendingReveal() {
+        guard let file = pendingReveal else { return }
+        pendingReveal = nil
+        let target = PaneState.normalize(file)
+        guard items.contains(where: { $0.url == target }) else { return }
+        pane.selection = [target]
+        revealRequest = target
     }
 
     // MARK: - Внешние изменения
@@ -480,6 +521,24 @@ public final class BrowserModel {
     public func copy() {
         guard !pane.selection.isEmpty else { return }
         pasteboard.write(Array(pane.selection), operation: .copy)
+        pane.clearCut()
+    }
+
+    /// Кладёт в буфер готовую строку.
+    ///
+    /// Через тот же PasteboardService, что и остальные буферные операции:
+    /// отдельный экземпляр во вью писал бы мимо того, что читает «Вставить».
+    public func copyText(_ text: String) {
+        pasteboard.writeText(text)
+    }
+
+    /// Кладёт в буфер заданные файлы, минуя выделение.
+    ///
+    /// Нужен выдаче поиска: там находки лежат в разных папках и выделением
+    /// панели не описываются вовсе.
+    public func copy(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        pasteboard.write(urls, operation: .copy)
         pane.clearCut()
     }
 

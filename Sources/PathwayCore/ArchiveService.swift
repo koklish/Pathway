@@ -142,6 +142,77 @@ public struct ArchiveService: Sendable {
         return wrapper
     }
 
+    /// Извлекает одну запись во временную папку и возвращает путь к файлу.
+    ///
+    /// Нужно для находки поиска внутри архива: открыть запись по двойному
+    /// клику. Временная папка своя на каждое извлечение — одноимённые записи из
+    /// разных архивов иначе затирали бы друг друга.
+    ///
+    /// **Архив распаковывается целиком, а нужный файл отбирается уже на диске.**
+    /// Это выглядит расточительно, но отбор средствами bsdtar здесь не работает:
+    /// при запуске из процесса приложения он не находит записи с кириллицей в
+    /// имени — ни позиционным шаблоном, ни через `--include`, ни в NFC, ни в
+    /// NFD, ни с выставленным LANG. Из shell та же команда с теми же байтами
+    /// отрабатывает, то есть дело в окружении процесса, а не в кодировке имени.
+    /// Разбираться дальше смысла нет: в проекте, где файлы называются
+    /// по-русски, отбор, спотыкающийся на кириллице, негоден в принципе, а
+    /// распаковка целиком надёжна при любых именах.
+    ///
+    /// Цена ограничена: записи ищутся среди уже найденного поиском, а поиск не
+    /// вскрывает архивы больше порога размера (50 МБ по сети, 500 МБ локально).
+    public func extractEntry(
+        _ entryPath: String,
+        from archive: URL,
+        password: String? = nil
+    ) async throws -> URL {
+        let temp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("Проводник-архив-\(UUID().uuidString)")
+        try fm.createDirectory(at: temp, withIntermediateDirectories: true)
+
+        let args = ["-x", "--passphrase", password ?? Self.dummyPassphrase,
+                    "-f", archive.path, "-C", temp.path]
+        do {
+            try await Self.run(bsdtar, args, workingDirectory: nil) { _ in }
+        } catch ArchiveError.wrongPassword where password == nil {
+            try? fm.removeItem(at: temp)
+            throw ArchiveError.passwordRequired
+        } catch {
+            try? fm.removeItem(at: temp)
+            throw error
+        }
+
+        // Сравнение по нормализованному пути: имя записи в архиве и имя,
+        // которым файл лёг на диск, различаются формой Unicode — macOS
+        // раскладывает «й» на «и» с диакритикой, а архив хранит как записали.
+        let wanted = entryPath.precomposedStringWithCanonicalMapping
+        let extracted = temp.appendingPathComponent(entryPath)
+        if fm.fileExists(atPath: extracted.path) { return extracted }
+
+        if let found = Self.find(wanted, under: temp, root: temp) { return found }
+
+        try? fm.removeItem(at: temp)
+        throw ArchiveError.toolFailed("Файл «\(entryPath)» не найден в архиве.")
+    }
+
+    /// Ищет файл по пути относительно корня, сравнивая нормализованные имена.
+    ///
+    /// Рекурсией, а не `FileManager.enumerator`: тот недоступен из
+    /// async-контекста, а вызов приходит именно оттуда.
+    private static func find(_ wanted: String, under directory: URL, root: URL) -> URL? {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.isDirectoryKey]
+        ) else { return nil }
+
+        for item in items {
+            let relative = String(item.path.dropFirst(root.path.count + 1))
+            if relative.precomposedStringWithCanonicalMapping == wanted { return item }
+            let isDirectory = (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            if isDirectory, let found = find(wanted, under: item, root: root) { return found }
+        }
+        return nil
+    }
+
     // MARK: - Вспомогательное
 
     private let bsdtar = URL(fileURLWithPath: "/usr/bin/bsdtar")

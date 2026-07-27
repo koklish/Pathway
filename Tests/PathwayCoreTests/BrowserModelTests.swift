@@ -308,4 +308,105 @@ struct BrowserModelTests {
             #expect(model.items.count == 2)
         }
     }
+
+    // MARK: - Переход с выделением
+
+    @Test("переход к файлу открывает его папку и выделяет его")
+    func navigatesRevealingFile() async throws {
+        try await withTempDirAsync { dir in
+            let sub = dir.appendingPathComponent("вложенная")
+            try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: false)
+            try Data("x".utf8).write(to: sub.appendingPathComponent("договор.txt"))
+            try Data("x".utf8).write(to: sub.appendingPathComponent("прочее.txt"))
+            let model = BrowserModel(path: dir)
+            model.reload()
+
+            let target = sub.appendingPathComponent("договор.txt")
+            model.navigate(to: sub, revealing: target)
+            await model.waitForLoad()
+
+            #expect(model.pane.path.lastPathComponent == "вложенная")
+            // Сравнение от items: DirectoryLoader канонизирует пути, а
+            // склеенный вручную URL — нет, и Set.contains не нашёл бы совпадения.
+            let found = try #require(model.items.first { $0.name == "договор.txt" })
+            #expect(model.pane.selection == [found.url])
+        }
+    }
+
+    @Test("выделение ставится после загрузки, а не до неё")
+    func revealWaitsForLoad() async throws {
+        try await withTempDirAsync { dir in
+            let sub = dir.appendingPathComponent("вложенная")
+            try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: false)
+            try Data("x".utf8).write(to: sub.appendingPathComponent("договор.txt"))
+            let model = BrowserModel(path: dir)
+            model.reload()
+
+            model.navigate(to: sub, revealing: sub.appendingPathComponent("договор.txt"))
+
+            // Сразу после вызова список ещё не прочитан: выделение на этот
+            // момент указывало бы на URL, которого в items нет.
+            #expect(model.pane.selection.isEmpty)
+
+            await model.waitForLoad()
+            #expect(model.pane.selection.count == 1)
+        }
+    }
+
+    @Test("переход в уже открытую папку выделяет файл сразу")
+    func revealsInCurrentDirectory() async throws {
+        try await withTempDirAsync { dir in
+            try Data("x".utf8).write(to: dir.appendingPathComponent("договор.txt"))
+            let model = BrowserModel(path: dir)
+            model.reload()
+
+            // Навигации не будет — путь тот же, — а с ней и загрузки, которая
+            // выполнила бы отложенный запрос.
+            let found = try #require(model.items.first)
+            model.navigate(to: dir, revealing: found.url)
+
+            #expect(model.pane.selection == [found.url])
+        }
+    }
+
+    @Test("исчезнувший файл не мешает перейти в папку")
+    func missingRevealTargetIsIgnored() async throws {
+        try await withTempDirAsync { dir in
+            let sub = dir.appendingPathComponent("вложенная")
+            try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: false)
+            let model = BrowserModel(path: dir)
+            model.reload()
+
+            // Файл удалили между поиском и переходом.
+            model.navigate(to: sub, revealing: sub.appendingPathComponent("нет.txt"))
+            await model.waitForLoad()
+
+            // Папка всё равно открылась: алерт здесь был бы хуже промаха.
+            #expect(model.pane.path.lastPathComponent == "вложенная")
+            #expect(model.pane.selection.isEmpty)
+            #expect(model.errorMessage == nil)
+        }
+    }
+
+    @Test("запрос прокрутки выставляется только при удачном выделении")
+    func revealRequestFollowsSelection() async throws {
+        try await withTempDirAsync { dir in
+            let sub = dir.appendingPathComponent("вложенная")
+            try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: false)
+            try Data("x".utf8).write(to: sub.appendingPathComponent("договор.txt"))
+            let model = BrowserModel(path: dir)
+            model.reload()
+
+            model.navigate(to: sub, revealing: sub.appendingPathComponent("нет.txt"))
+            await model.waitForLoad()
+            // Прокручивать не к чему — запрос не выставляется.
+            #expect(model.revealRequest == nil)
+
+            model.navigate(to: dir)
+            await model.waitForLoad()
+            model.navigate(to: sub, revealing: sub.appendingPathComponent("договор.txt"))
+            await model.waitForLoad()
+            #expect(model.revealRequest != nil)
+        }
+    }
 }

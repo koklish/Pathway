@@ -66,6 +66,7 @@ struct AppCommands: Commands {
             item(.goUp)
             Divider()
             item(.editPath)
+            item(.findInFolder)
             Divider()
             item(.nextTab)
             item(.previousTab)

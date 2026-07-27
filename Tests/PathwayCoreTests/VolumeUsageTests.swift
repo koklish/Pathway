@@ -5,13 +5,19 @@ import Testing
 
 @Suite("Занятость тома")
 struct VolumeUsageTests {
-    private func usage(total: Int64, available: Int64, isNetwork: Bool = false) -> VolumeUsage {
+    private func usage(
+        total: Int64,
+        available: Int64,
+        isNetwork: Bool = false,
+        hasReliableUsage: Bool = true
+    ) -> VolumeUsage {
         VolumeUsage(
             url: URL(fileURLWithPath: "/Volumes/Тест"),
             name: "Тест",
             isNetwork: isNetwork,
             totalBytes: total,
-            availableBytes: available
+            availableBytes: available,
+            hasReliableUsage: hasReliableUsage
         )
     }
 
@@ -107,6 +113,74 @@ struct VolumeUsageTests {
         // на котором свободна десятая часть, и красный перестал бы что-то значить.
         #expect(!usage(total: 100 * gigabyte, available: 10 * gigabyte).isNearlyFull)
         #expect(usage(total: 100 * gigabyte, available: 5 * gigabyte).isNearlyFull)
+    }
+
+    /// Числа FTP-заглушки: ровно 1 ГиБ общего, свободного ноль. Не выдуманы для
+    /// теста — так том выглядит в df.
+    private var ftpStub: (total: Int64, available: Int64) { (1_073_741_824, 0) }
+
+    @Test("недостоверная занятость не считается почти заполненной")
+    func unreliableUsageIsNotNearlyFull() {
+        // Драйвер FTP отдаёт постоянную заглушку вместо состояния сервера, и
+        // тревога по ней горела бы всегда — красный перестал бы что-то значить.
+        let volume = usage(
+            total: ftpStub.total,
+            available: ftpStub.available,
+            isNetwork: true,
+            hasReliableUsage: false
+        )
+
+        #expect(!volume.isNearlyFull)
+    }
+
+    @Test("недостоверная занятость даёт долю 0, а не единицу")
+    func unreliableUsageGivesZeroFraction() {
+        let volume = usage(
+            total: ftpStub.total,
+            available: ftpStub.available,
+            isNetwork: true,
+            hasReliableUsage: false
+        )
+
+        #expect(volume.fraction == 0)
+    }
+
+    @Test("подпись недостоверного тома не называет чисел")
+    func unreliableUsageCaptionHasNoNumbers() {
+        let volume = usage(
+            total: ftpStub.total,
+            available: ftpStub.available,
+            isNetwork: true,
+            hasReliableUsage: false
+        )
+
+        #expect(volume.caption == "Объём неизвестен")
+        #expect(!volume.caption.contains("ГБ"))
+    }
+
+    @Test("достоверный том с теми же числами остаётся почти заполненным")
+    func reliableUsageStillWarns() {
+        // Контраст к трём тестам выше: гасится недостоверность, а не тревога
+        // вообще. Без этой проверки полоска легко перестала бы краснеть у всех.
+        let volume = usage(total: ftpStub.total, available: ftpStub.available, isNetwork: true)
+
+        #expect(volume.isNearlyFull)
+        #expect(volume.fraction == 1)
+    }
+
+    @Test("занятость по умолчанию считается достоверной")
+    func usageIsReliableByDefault() {
+        // Недостоверность объявляется явно: неудача statfs не должна гасить
+        // полоски у всех дисков разом.
+        let volume = VolumeUsage(
+            url: URL(fileURLWithPath: "/Volumes/Тест"),
+            name: "Тест",
+            isNetwork: false,
+            totalBytes: 100 * gigabyte,
+            availableBytes: 50 * gigabyte
+        )
+
+        #expect(volume.hasReliableUsage)
     }
 }
 
