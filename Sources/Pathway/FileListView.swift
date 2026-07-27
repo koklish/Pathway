@@ -387,11 +387,35 @@ struct FileListView: NSViewRepresentable {
             model.isRenaming = false
         }
 
+        /// Элемент строки, в ячейке которой лежит поле. Нужен, когда редактор открыл
+        /// сам AppKit: своего editingItem в этом случае нет.
+        private func itemURL(forFieldIn field: NSTextField) -> URL? {
+            guard let table else { return nil }
+            // row(for:) отдаёт -1, если ячейку уже переиспользовали под другую строку.
+            let row = table.row(for: field)
+            guard model.items.indices.contains(row) else { return nil }
+            return model.items[row].url
+        }
+
         /// При переименовании выделяется только имя без расширения — как в проводнике.
         private func selectNameWithoutExtension(in field: NSTextField, item: FileItem) {
             guard !item.isDirectory else { return }
             let stem = item.url.deletingPathExtension().lastPathComponent
             field.currentEditor()?.selectedRange = NSRange(location: 0, length: stem.count)
+        }
+
+        /// Правку, начатую самим AppKit, надо обставить теми же флагами, что и свою:
+        /// иначе F2 и ⌘⌫ сработают как файловые команды прямо посреди набора имени,
+        /// а фоновая перезагрузка списка уведёт фокус и сотрёт набранное.
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField,
+                  editingItem == nil,
+                  let url = itemURL(forFieldIn: field)
+            else { return }
+            editingItem = url
+            originalName = url.lastPathComponent
+            appState.isEditingText = true
+            model.isRenaming = true
         }
 
         /// Escape отменяет правку: возвращаем исходное имя и снимаем фокус,
@@ -416,7 +440,11 @@ struct FileListView: NSViewRepresentable {
 
         func controlTextDidEndEditing(_ notification: Notification) {
             guard let field = notification.object as? NSTextField, !isCancelling else { return }
-            guard let renaming = renamingItem else {
+            // Правку начинает не только пункт меню: по клику в уже выделенную строку
+            // редактор поднимает сам NSTableView, и renamingItem тогда пуст. Опора на
+            // него теряла бы такое имя молча — поле показывало бы новое, файл оставался
+            // старым. Поэтому элемент берём из строки, где лежит поле.
+            guard let renaming = editingItem ?? itemURL(forFieldIn: field) else {
                 finishEditing(field)
                 return
             }
