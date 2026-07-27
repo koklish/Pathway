@@ -31,7 +31,7 @@ public enum CredentialPrompt: Equatable, Sendable {
 
 /// Подключение к серверам: учётные данные, монтирование, состояние.
 ///
-/// Собирает вместе закладки, Связку ключей и NetFS, чтобы интерфейсу
+/// Собирает вместе закладки, хранилище учётных данных и NetFS, чтобы интерфейсу
 /// доставался один понятный ответ: смонтировано, нужен пароль или ошибка.
 @Observable
 @MainActor
@@ -47,7 +47,10 @@ public final class ServerConnection {
 
     public init(
         bookmarks: ServerBookmarks = ServerBookmarks(),
-        credentials: any CredentialStoring = KeychainCredentialStore(),
+        credentials: any CredentialStoring = MigratingCredentialStore(
+            primary: FileCredentialStore(),
+            legacy: KeychainCredentialStore()
+        ),
         mounter: any Mounting = ServerMounter(),
         mounted: MountedServers = MountedServers()
     ) {
@@ -65,9 +68,9 @@ public final class ServerConnection {
 
     /// Подключается к серверу.
     ///
-    /// Учётные данные выбираются по приоритету: переданные явно → сохранённые
-    /// в Связке ключей → гостевой вход, если так помечена закладка. Если ничего
-    /// нет, пробуем гостя и по отказу просим авторизацию.
+    /// Учётные данные выбираются по приоритету: переданные явно → сохранённые →
+    /// гостевой вход, если так помечена закладка. Если ничего нет, пробуем гостя
+    /// и по отказу просим авторизацию.
     public func connect(
         to server: ServerAddress,
         user: String? = nil,
@@ -79,10 +82,11 @@ public final class ServerConnection {
         connecting.insert(key)
         defer { connecting.remove(key) }
 
-        // Сохранённый пароль читаем только когда он действительно понадобится:
-        // именно чтение данных пароля заставляет macOS показать диалог доступа
-        // к Связке ключей. Гостевому входу он не нужен вовсе, а при явно введённых
-        // логине и пароле — тем более: пользователь только что набрал их сам.
+        // Сохранённый пароль читаем только когда он действительно понадобится.
+        // Гостевому входу он не нужен вовсе, а при явно введённых логине и пароле —
+        // тем более: пользователь только что набрал их сам. Для записей, ещё не
+        // перенесённых из Связки ключей, эта бережливость решает и вторую задачу:
+        // именно чтение данных пароля вызывает диалог доступа к Связке.
         let saved = (asGuest || (user != nil && password != nil))
             ? nil
             : credentials.load(for: server)

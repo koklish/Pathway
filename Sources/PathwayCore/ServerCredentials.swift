@@ -12,7 +12,8 @@ public struct ServerCredentials: Equatable, Sendable {
     }
 }
 
-/// Хранилище учётных данных. Отдельный протокол — чтобы тесты не трогали Связку ключей.
+/// Хранилище учётных данных. Отдельный протокол — чтобы тесты не трогали
+/// настоящие пароли пользователя, а реализацию можно было заменить целиком.
 public protocol CredentialStoring: Sendable {
     func save(user: String, password: String, for server: ServerAddress) throws
     func load(for server: ServerAddress) -> ServerCredentials?
@@ -20,15 +21,17 @@ public protocol CredentialStoring: Sendable {
 
     /// Есть ли сохранённая запись — без чтения самого пароля.
     ///
-    /// Отдельно от `load`, потому что именно чтение данных пароля заставляет macOS
-    /// спрашивать разрешение на доступ к Связке ключей. Там, где нужен лишь факт
-    /// наличия записи, платить диалогом незачем.
+    /// В `FileCredentialStore` стоит столько же, сколько `load`, а вот в Связке
+    /// ключей разница принципиальная: именно чтение данных пароля заставляет
+    /// macOS спрашивать разрешение. Пока не перенесены все записи, платить
+    /// диалогом там, где нужен лишь факт наличия, незачем.
     func exists(for server: ServerAddress) -> Bool
 
     /// Сохранённый логин — без чтения пароля.
     ///
-    /// Логин лежит в атрибуте записи, а не в её защищённых данных, поэтому
-    /// подставить его в форму входа можно, не вызывая диалога.
+    /// Разделение той же природы, что у `exists`: в Связке ключей логин лежит в
+    /// атрибуте записи, а не в её защищённых данных, поэтому подставить его в
+    /// форму входа можно, не вызывая диалога.
     func savedUser(for server: ServerAddress) -> String?
 }
 
@@ -190,7 +193,9 @@ public final class InMemoryCredentialStore: CredentialStoring, @unchecked Sendab
         _ = lock.withLock { storage.removeValue(forKey: Self.key(server)) }
     }
 
+    // Тот же ключ, что у боевых хранилищ: тест, где адреса совпадают по key,
+    // но расходятся здесь, проверял бы не то поведение, что в приложении.
     private static func key(_ server: ServerAddress) -> String {
-        "\(server.scheme)://\(server.host)/\(server.share)"
+        server.key
     }
 }

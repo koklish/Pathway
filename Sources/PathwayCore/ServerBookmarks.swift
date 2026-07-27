@@ -42,7 +42,7 @@ public struct ServerBookmark: Identifiable, Equatable, Hashable, Sendable, Codab
 
 /// Список избранных серверов, переживающий перезапуск приложения.
 ///
-/// Хранятся только адреса — пароли живут в Связке ключей, здесь их нет.
+/// Хранятся только адреса — пароли живут в `FileCredentialStore`, здесь их нет.
 @Observable
 @MainActor
 public final class ServerBookmarks {
