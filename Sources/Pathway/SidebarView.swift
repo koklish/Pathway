@@ -56,7 +56,7 @@ struct SidebarView: View {
                             onEditSettings: onEditServer
                         )
 
-                        VolumesSection(model: model)
+                        VolumesSection(model: model, connection: connection)
                     }
                 }
             }
@@ -475,6 +475,9 @@ extension URL {
 /// Секция «Диски»: занятость каждого смонтированного тома полоской.
 private struct VolumesSection: View {
     let model: BrowserModel
+    /// Нужен только ради учётной записи тома: сами числа занятости читаются
+    /// через statfs и о сервере не знают.
+    let connection: ServerConnection
     @State private var volumes = VolumesModel()
 
     /// Раз в полминуты. Занятость меняется постоянно, а событие «место
@@ -486,7 +489,7 @@ private struct VolumesSection: View {
         SectionHeader(title: "ДИСКИ")
 
         ForEach(volumes.volumes) { volume in
-            VolumeRow(volume: volume, model: model)
+            VolumeRow(volume: volume, model: model, user: connection.mounted.user(at: volume.url))
         }
 
         // Пустого состояния нет: загрузочный том есть всегда, и текст «дисков
@@ -502,6 +505,9 @@ private struct VolumesSection: View {
 private struct VolumeRow: View {
     let volume: VolumeUsage
     let model: BrowserModel
+    /// Учётная запись сетевого тома. nil у локальных дисков и у сетевых,
+    /// подключённых без логина, — подписи тогда нет вовсе.
+    let user: String?
 
     private var isSelected: Bool { model.pane.path.path == volume.url.path }
 
@@ -536,10 +542,23 @@ private struct VolumeRow: View {
                     }
                     .frame(height: 4)
 
-                    Text(volume.caption)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    // Логин в одной строке с занятостью, а не третьей строкой:
+                    // иначе сетевой том стал бы заметно выше локальных, и
+                    // список дисков потерял бы ровный шаг.
+                    HStack(spacing: 4) {
+                        Text(volume.caption)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+
+                        if let user, !user.isEmpty {
+                            Text("· \(user)")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
                 }
                 .padding(.leading, 24)
             }

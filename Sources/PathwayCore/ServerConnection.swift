@@ -87,9 +87,16 @@ public final class ServerConnection {
         // тем более: пользователь только что набрал их сам. Для записей, ещё не
         // перенесённых из Связки ключей, эта бережливость решает и вторую задачу:
         // именно чтение данных пароля вызывает диалог доступа к Связке.
+        // Пароль лежит под адресом с логином — под ним же он и сохранён. Запись,
+        // сделанную до того, как логин стал частью адреса, ищем по адресу без
+        // логина, но только когда своей записи нет: наличие проверяется через
+        // exists, а не вторым load, потому что диалог доступа к Связке ключей
+        // вызывает именно чтение данных пароля.
+        let legacy = server.user != nil && !credentials.exists(for: server)
+        let source = legacy ? server.with(user: nil) : server
         let saved = (asGuest || (user != nil && password != nil))
             ? nil
-            : credentials.load(for: server)
+            : credentials.load(for: source)
         let wantsGuest = asGuest || (user == nil && saved == nil && bookmarks.bookmark(for: server)?.isGuest == true)
 
         // Явно переданные данные важнее сохранённых: пользователь только что их ввёл.
@@ -108,8 +115,13 @@ public final class ServerConnection {
             case .authenticationRequired:
                 return .needsCredentials(suggestedUser: saved?.user, reason: .firstTime)
             case .mounted(let point):
+                // Логин вписывается в адрес до записи в хранилища: именно адрес
+                // служит ключом закладок, паролей и точек монтирования, и без
+                // него подключение вторым пользователем вытеснило бы первое.
+                // Гостю логин не приписываем — у него его нет по определению.
+                let identity = wantsGuest ? server : server.with(user: effectiveUser ?? server.user)
                 finishSuccessfulMount(
-                    server, at: point,
+                    identity, at: point,
                     user: effectiveUser, password: effectivePassword,
                     asGuest: wantsGuest, remember: remember
                 )
@@ -198,6 +210,19 @@ public final class ServerConnection {
         bookmarks.remove(server)
     }
 
+    /// То же для конкретной записи списка.
+    ///
+    /// Отдельный метод, а не разбор адреса на месте: на одном адресе живут разные
+    /// учётные записи и гостевой вход, и удаление по адресу унесло бы соседей
+    /// вместе с их паролями. Пароль стирается по адресу самой записи — у гостя
+    /// его нет, и удалять там нечего.
+    public func removeBookmark(_ bookmark: ServerBookmark) {
+        if let server = bookmark.server, !bookmark.isGuest {
+            try? credentials.delete(for: server)
+        }
+        bookmarks.remove(bookmark)
+    }
+
     /// Сохраняет настройки из формы редактирования.
     ///
     /// Пустой пароль означает «не менять»: форма не показывает сохранённый пароль,
@@ -209,7 +234,24 @@ public final class ServerConnection {
         isGuest: Bool,
         newAddress: ServerAddress? = nil
     ) {
-        let target = newAddress ?? server
+        // Логин вписывается в целевой адрес: поле адреса в форме его не
+        // показывает, и без этого смена учётной записи сохранила бы пароль под
+        // прежним ключом, а закладка осталась бы с прежним логином.
+        //
+        // Только когда логин в адресе уже был: запись, сохранённая до того, как
+        // логин стал частью адреса, обязана остаться на своём ключе. Иначе любое
+        // открытие её настроек выглядело бы переездом на новый адрес — со
+        // сменой ключа пароля и лишней закладкой вместо прежней.
+        let base = newAddress ?? server
+        let target: ServerAddress
+        if isGuest {
+            // Гостю логин не приписываем — у него его нет по определению.
+            target = base.with(user: nil)
+        } else if server.user != nil {
+            target = base.with(user: user.isEmpty ? nil : user)
+        } else {
+            target = base
+        }
 
         if isGuest {
             // Гостю учётные данные не нужны, а оставлять их — значит подсунуть их
@@ -233,13 +275,17 @@ public final class ServerConnection {
             // перезаписывать её тем же значением — лишний диалог Связки ключей.
         }
 
-        if let newAddress, newAddress != server {
-            bookmarks.replace(server, with: newAddress, isGuest: isGuest)
+        // Сравнение с target, а не с newAddress: логин теперь часть адреса, и
+        // смена одной только учётной записи при прежнем хосте — это тоже новый
+        // адрес записи. По прежнему условию она ушла бы в setGuest и осталась
+        // бы с логином, который пользователь только что заменил.
+        if target != server {
+            bookmarks.replace(server, with: target, isGuest: isGuest)
             // Точка монтирования принадлежит прежнему адресу: том остаётся
             // подключённым до тех пор, пока его не отключат вручную.
             if let point = mounted.mountPoint(for: server) {
                 mounted.forget(server)
-                mounted.remember(newAddress, at: point)
+                mounted.remember(target, at: point)
             }
         } else {
             bookmarks.setGuest(isGuest, for: server)

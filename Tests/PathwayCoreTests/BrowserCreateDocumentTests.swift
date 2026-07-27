@@ -7,7 +7,7 @@ import Testing
 struct BrowserCreateDocumentTests {
     private let template = DocumentTemplate(
         id: "txt", title: "Текстовый документ", defaultName: "Новый документ",
-        fileExtension: "txt", group: .basic
+        fileExtension: "txt", group: .basic, content: .empty
     )
 
     @Test("создаёт документ в текущей папке и возвращает его адрес")
@@ -20,15 +20,25 @@ struct BrowserCreateDocumentTests {
         }
     }
 
-    @Test("при неудаче возвращает nil и показывает ошибку, а не молчит")
+    /// Отсутствующая заготовка больше не может быть причиной отказа — содержимое
+    /// собирается кодом. Осталась причина со стороны файловой системы, и она
+    /// по-прежнему должна доходить до пользователя текстом, а не молчанием.
+    @Test("при неудаче записи возвращает nil и показывает ошибку, а не молчит")
     func reportsFailure() throws {
         try withTempDir { dir in
-            let missing = DocumentTemplate(
-                id: "нет-такого", title: "Не существует", defaultName: "Документ",
-                fileExtension: "xyz", group: .basic
+            let locked = dir.appendingPathComponent("только-чтение")
+            try FileManager.default.createDirectory(
+                at: locked, withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o500]
             )
-            let model = BrowserModel(path: dir)
-            #expect(model.createDocument(missing) == nil)
+            defer {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700], ofItemAtPath: locked.path
+                )
+            }
+
+            let model = BrowserModel(path: locked)
+            #expect(model.createDocument(template) == nil)
             #expect(model.errorMessage != nil)
         }
     }

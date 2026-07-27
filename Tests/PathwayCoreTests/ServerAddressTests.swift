@@ -93,12 +93,87 @@ struct ServerAddressTests {
         #expect(address?.share == "webdav/docs")
     }
 
-    @Test("логин в адресе отбрасывается — учётные данные вводятся отдельно")
-    func stripsUserInfo() {
+    @Test("логин в адресе сохраняется — он часть идентичности сервера")
+    func keepsUserInfo() {
         let address = ServerAddress.parse("smb://alex@nas.local/Общие")
 
         #expect(address?.host == "nas.local")
         #expect(address?.share == "Общие")
+        #expect(address?.user == "alex")
+    }
+
+    @Test("адрес без логина даёт nil, а не пустую строку")
+    func missingUserIsNil() {
+        // Пустая строка сделала бы «smb://@nas.local» валидным ключом, отличным
+        // от «smb://nas.local», и закладки разъехались бы на пустом месте.
+        #expect(ServerAddress.parse("smb://nas.local/Общие")?.user == nil)
+        #expect(ServerAddress.parse("smb://@nas.local/Общие")?.user == nil)
+    }
+
+    @Test("логин уцелел при разборе адреса от getmntinfo")
+    func keepsUserFromSystemMount() throws {
+        // f_mntfromname для SMB имеет вид «//ivan@nas/share»: логин система
+        // отдаёт сама, и раньше он терялся на разборе — том, подключённый
+        // мимо приложения, не отличался от подключённого другим логином.
+        let address = try #require(ServerAddress.parse("//ivan@nas.local/MAIN"))
+
+        #expect(address.user == "ivan")
+        #expect(address.host == "nas.local")
+    }
+
+    @Test("логин возвращается обратно в строку URL")
+    func putsUserBackIntoURL() throws {
+        let address = try #require(ServerAddress.parse("smb://alex@nas.local/Общие"))
+
+        #expect(address.url?.absoluteString.hasPrefix("smb://alex@nas.local/") == true)
+    }
+
+    @Test("Windows-нотация с логином тоже отдаёт логин")
+    func keepsUserFromUNC() throws {
+        let address = try #require(ServerAddress.parse(#"\\alex@nas.local\Общие"#))
+
+        #expect(address.user == "alex")
+        #expect(address.scheme == "smb")
+    }
+
+    @Test("собака в имени ресурса логином не считается")
+    func atSignInSharePathIsNotUser() throws {
+        // Искать логин по всей строке нельзя: «отчёт@2024» — законное имя папки,
+        // и хостом стал бы «2024».
+        let address = try #require(ServerAddress.parse("smb://nas.local/отчёт@2024"))
+
+        #expect(address.user == nil)
+        #expect(address.host == "nas.local")
+        #expect(address.share == "отчёт@2024")
+    }
+
+    @Test("ключом служит полный адрес с логином, а не только хост и ресурс")
+    func keyIncludesUser() throws {
+        let ivan = try #require(ServerAddress.parse("smb://ivan@nas.local/MAIN"))
+        let petr = try #require(ServerAddress.parse("smb://petr@nas.local/MAIN"))
+        let anonymous = try #require(ServerAddress.parse("smb://nas.local/MAIN"))
+
+        #expect(ivan.key != petr.key)
+        #expect(ivan.key != anonymous.key)
+        #expect(ivan.key == "smb://ivan@nas.local/MAIN")
+    }
+
+    @Test("одинаковый логин даёт совпадающий ключ")
+    func sameUserSameKey() throws {
+        let first = try #require(ServerAddress.parse("smb://ivan@nas.local/MAIN"))
+        let second = try #require(ServerAddress.parse("smb://ivan@nas.local/MAIN"))
+
+        #expect(first.key == second.key)
+        #expect(first == second)
+    }
+
+    @Test("адрес без логина сохраняет прежний ключ — старые закладки не осиротели")
+    func keyUnchangedWithoutUser() throws {
+        // Формат ключа у записей без логина обязан совпасть с сохранённым до
+        // появления поля: иначе закладки и пароли коллег перестали бы находиться.
+        let address = try #require(ServerAddress.parse("smb://nas.local/Общие"))
+
+        #expect(address.key == "smb://nas.local/%D0%9E%D0%B1%D1%89%D0%B8%D0%B5")
     }
 
     @Test("кириллица в имени ресурса экранируется, URL остаётся валидным")

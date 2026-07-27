@@ -137,8 +137,12 @@ public final class ConnectServerModel {
     /// Открывает форму настроек сохранённого сервера.
     public func startEditing(_ server: ServerAddress) {
         step = .editing(server)
-        addressText = server.key.removingPercentEncoding ?? server.key
-        username = connection.savedUser(for: server) ?? ""
+        // Адрес показывается без логина: для него в форме есть своё поле, и
+        // «smb://ivan@nas/MAIN» рядом с заполненным «Имя пользователя» читалось
+        // бы как два разных требования ввести одно и то же.
+        let bare = server.with(user: nil)
+        addressText = bare.key.removingPercentEncoding ?? bare.key
+        username = server.user ?? connection.savedUser(for: server) ?? ""
         password = ""
         hasStoredPassword = connection.hasSavedPassword(for: server)
         login = connection.bookmarks.bookmark(for: server)?.isGuest == true ? .guest : .registered
@@ -189,7 +193,10 @@ public final class ConnectServerModel {
         case .shares(let host):
             // Кнопка на этом шаге подключает к выбранной папке; если ничего
             // не выбрано, подключаемся к серверу целиком — как раньше.
-            await connect(ServerAddress(scheme: "smb", host: host, share: ""))
+            // Логин переносим по той же причине, что и в selectShare: без него
+            // подключение ушло бы под другой идентичностью.
+            let user = login == .registered && !username.isEmpty ? username : nil
+            await connect(ServerAddress(scheme: "smb", host: host, share: "", user: user))
 
         case .credentials(let server):
             await connect(server, withCredentials: true)
@@ -251,8 +258,14 @@ public final class ConnectServerModel {
 
     /// Подключается к выбранной папке сервера.
     public func selectShare(_ share: Share, host: String) async {
-        let server = ServerAddress(scheme: "smb", host: host, share: share.name)
-        addressText = server.key.removingPercentEncoding ?? server.key
+        // Логин переносится в адрес: шары просматривались под ним, и без него
+        // подключение ушло бы под другой идентичностью — с чужим паролем и
+        // чужой точкой монтирования.
+        let user = login == .registered && !username.isEmpty ? username : nil
+        let server = ServerAddress(scheme: "smb", host: host, share: share.name, user: user)
+        // В поле адреса логин не дублируем — он виден в своём поле формы.
+        let bare = server.with(user: nil)
+        addressText = bare.key.removingPercentEncoding ?? bare.key
         await connect(server)
     }
 

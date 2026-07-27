@@ -78,6 +78,54 @@ struct FileCredentialStoreTests {
         }
     }
 
+    @Test("пароли двух учётных записей на один ресурс не пересекаются")
+    func keysByUserToo() throws {
+        try withTempDir { dir in
+            let store = makeStore(in: dir)
+            let ivan = try #require(ServerAddress.parse("smb://ivan@nas.local/MAIN"))
+            let petr = try #require(ServerAddress.parse("smb://petr@nas.local/MAIN"))
+
+            try store.save(user: "ivan", password: "первый", for: ivan)
+            try store.save(user: "petr", password: "второй", for: petr)
+
+            // До появления логина в ключе второе сохранение затирало первое:
+            // адрес у обеих записей был один.
+            #expect(store.load(for: ivan)?.password == "первый")
+            #expect(store.load(for: petr)?.password == "второй")
+        }
+    }
+
+    @Test("удаление пароля одной учётной записи оставляет пароль второй")
+    func deletingOneUserKeepsOther() throws {
+        try withTempDir { dir in
+            let store = makeStore(in: dir)
+            let ivan = try #require(ServerAddress.parse("smb://ivan@nas.local/MAIN"))
+            let petr = try #require(ServerAddress.parse("smb://petr@nas.local/MAIN"))
+            try store.save(user: "ivan", password: "первый", for: ivan)
+            try store.save(user: "petr", password: "второй", for: petr)
+
+            try store.delete(for: ivan)
+
+            #expect(store.load(for: ivan) == nil)
+            #expect(store.load(for: petr)?.password == "второй")
+        }
+    }
+
+    @Test("пароль под логином не отдаётся адресу без логина")
+    func userlessAddressDoesNotSeeUserPassword() throws {
+        try withTempDir { dir in
+            let store = makeStore(in: dir)
+            let ivan = try #require(ServerAddress.parse("smb://ivan@nas.local/MAIN"))
+            let anonymous = try #require(ServerAddress.parse("smb://nas.local/MAIN"))
+            try store.save(user: "ivan", password: "первый", for: ivan)
+
+            // Гостевой вход на тот же ресурс — другая запись, и подсовывать ему
+            // чужой пароль нельзя: он подключился бы под неожиданными правами.
+            #expect(store.load(for: anonymous) == nil)
+            #expect(store.exists(for: anonymous) == false)
+        }
+    }
+
     @Test("переживает пересоздание хранилища")
     func survivesRecreation() throws {
         try withTempDir { dir in

@@ -114,6 +114,74 @@ struct MountedServersTests {
         #expect(servers.networkVolumes.first?.mountPoint.path == "/Volumes/MAIN")
     }
 
+    @Test("один ресурс под разными учётными записями даёт две строки")
+    func differentUsersKeepBothMounts() throws {
+        let servers = MountedServers()
+        // Так выглядят два одновременных подключения к одному ресурсу: система
+        // монтирует их в разные точки, и схлопывать их нельзя — это не следы
+        // прошлого подключения, а два живых тома с разными правами.
+        let ivan = try #require(ServerAddress.parse("//ivan@samba.ip.pro/MAIN"))
+        let petr = try #require(ServerAddress.parse("//petr@samba.ip.pro/MAIN"))
+
+        servers.adopt([
+            MountedServers.NetworkVolume(server: ivan, mountPoint: URL(fileURLWithPath: "/Volumes/MAIN")),
+            MountedServers.NetworkVolume(server: petr, mountPoint: URL(fileURLWithPath: "/Volumes/MAIN-1")),
+        ])
+
+        #expect(servers.networkVolumes.count == 2)
+    }
+
+    @Test("каждая учётная запись помнит свою точку монтирования")
+    func mountPointIsPerUser() throws {
+        let servers = MountedServers()
+        let ivan = try #require(ServerAddress.parse("//ivan@samba.ip.pro/MAIN"))
+        let petr = try #require(ServerAddress.parse("//petr@samba.ip.pro/MAIN"))
+
+        servers.remember(ivan, at: URL(fileURLWithPath: "/Volumes/MAIN"))
+        servers.remember(petr, at: URL(fileURLWithPath: "/Volumes/MAIN-1"))
+
+        #expect(servers.mountPoint(for: ivan)?.path == "/Volumes/MAIN")
+        #expect(servers.mountPoint(for: petr)?.path == "/Volumes/MAIN-1")
+    }
+
+    @Test("отключение одной учётной записи не забывает вторую")
+    func forgettingOneUserKeepsOther() throws {
+        let servers = MountedServers()
+        let ivan = try #require(ServerAddress.parse("//ivan@samba.ip.pro/MAIN"))
+        let petr = try #require(ServerAddress.parse("//petr@samba.ip.pro/MAIN"))
+        servers.remember(ivan, at: URL(fileURLWithPath: "/Volumes/MAIN"))
+        servers.remember(petr, at: URL(fileURLWithPath: "/Volumes/MAIN-1"))
+
+        servers.forget(ivan)
+
+        #expect(!servers.isMounted(ivan))
+        #expect(servers.isMounted(petr))
+    }
+
+    @Test("по точке монтирования находится учётная запись тома")
+    func findsUserByMountPoint() throws {
+        let servers = MountedServers()
+        let ivan = try #require(ServerAddress.parse("//ivan@samba.ip.pro/MAIN"))
+        let petr = try #require(ServerAddress.parse("//petr@samba.ip.pro/MAIN"))
+        servers.adopt([
+            MountedServers.NetworkVolume(server: ivan, mountPoint: URL(fileURLWithPath: "/Volumes/MAIN")),
+            MountedServers.NetworkVolume(server: petr, mountPoint: URL(fileURLWithPath: "/Volumes/MAIN-1")),
+        ])
+
+        // Сопоставление по точке монтирования, а не по имени тома: имена у одного
+        // ресурса, подключённого дважды, совпадают, а точки уникальны — их
+        // выдаёт система.
+        #expect(servers.user(at: URL(fileURLWithPath: "/Volumes/MAIN")) == "ivan")
+        #expect(servers.user(at: URL(fileURLWithPath: "/Volumes/MAIN-1")) == "petr")
+    }
+
+    @Test("у локального диска учётной записи нет")
+    func localVolumeHasNoUser() {
+        let servers = MountedServers()
+
+        #expect(servers.user(at: URL(fileURLWithPath: "/")) == nil)
+    }
+
     @Test("адрес от getmntinfo остаётся smb, а не теряет схему")
     func systemMountSourceKeepsSMBScheme() throws {
         // Ровно та форма, в которой система отдаёт f_mntfromname: схемы в ней

@@ -9,7 +9,20 @@ struct ServerEntry: Identifiable {
     /// Пусто у томов, смонтированных мимо приложения: удалять из списка нечего.
     let bookmark: ServerBookmark?
 
-    var id: String { server.key }
+    /// У закладки берётся её идентификатор, а не адрес: гостевая и обычная записи
+    /// на один ресурс имеют общий адрес, и по нему строки схлопнулись бы в одну.
+    var id: String { bookmark?.id ?? server.key }
+
+    /// Учётная запись под строкой: логин, «гость» или ничего.
+    ///
+    /// Логин читается прямо из адреса, а не из хранилища паролей: обращение к
+    /// настоящей Связке ключей открывает системный диалог доступа, и платить им
+    /// за подпись в сайдбаре нельзя.
+    var userCaption: String? {
+        if bookmark?.isGuest == true { return "гость" }
+        guard let user = server.user, !user.isEmpty else { return nil }
+        return user
+    }
 }
 
 /// Секция «Сеть»: сохранённые серверы и кнопка нового подключения.
@@ -28,17 +41,22 @@ struct NetworkSection: View {
     /// мимо приложения — иначе такой диск исчезнет из сайдбара совсем.
     private var entries: [ServerEntry] {
         var result: [ServerEntry] = []
-        // Один адрес — одна строка. Совпадение id в ForEach ломает и выделение,
-        // и наведение: подсвечиваются сразу все строки с этим id.
+        // Одна запись — одна строка. Совпадение id в ForEach ломает и выделение,
+        // и наведение: подсвечиваются сразу все строки с этим id. Ключ — тот же
+        // id записи, поэтому разные учётные записи на одном адресе уживаются, а
+        // повтор одной и той же по-прежнему отсекается.
         var seen: Set<String> = []
 
         for bookmark in connection.bookmarks.items {
-            guard let server = bookmark.server, seen.insert(server.key).inserted else { continue }
-            result.append(ServerEntry(server: server, name: bookmark.name, bookmark: bookmark))
+            guard let server = bookmark.server else { continue }
+            let entry = ServerEntry(server: server, name: bookmark.name, bookmark: bookmark)
+            guard seen.insert(entry.id).inserted else { continue }
+            result.append(entry)
         }
         for volume in connection.mounted.networkVolumes {
-            guard seen.insert(volume.server.key).inserted else { continue }
-            result.append(ServerEntry(server: volume.server, name: volume.name, bookmark: nil))
+            let entry = ServerEntry(server: volume.server, name: volume.name, bookmark: nil)
+            guard seen.insert(entry.id).inserted else { continue }
+            result.append(entry)
         }
         return result
     }
@@ -90,7 +108,9 @@ struct NetworkSection: View {
         ) {
             Button("Отмена", role: .cancel) { pendingRemoval = nil }
             Button("Удалить", role: .destructive) {
-                if let server = pendingRemoval?.server { connection.removeBookmark(for: server) }
+                // По записи, а не по адресу: на одном адресе живут разные учётные
+                // записи, и удаление по адресу унесло бы соседние вместе с их паролями.
+                if let bookmark = pendingRemoval { connection.removeBookmark(bookmark) }
                 pendingRemoval = nil
             }
         } message: {
@@ -212,10 +232,25 @@ private struct ServerRow: View {
             Button(action: activate) {
                 HStack(spacing: 8) {
                     icon
-                    Text(entry.name)
-                        .font(.system(size: 13))
-                        .foregroundStyle(isMounted ? .primary : .secondary)
-                        .lineLimit(1)
+                    // Логин уходит во вторую строку, а не в скобки к имени: имя
+                    // ресурса и без него бывает длинным («Спецификации (samba.ip.pro)»),
+                    // и в узком сайдбаре скобки съел бы усекатель первыми.
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(entry.name)
+                            .font(.system(size: 13))
+                            .foregroundStyle(isMounted ? .primary : .secondary)
+                            .lineLimit(1)
+
+                        // Записи без учётной записи подписи не получают вовсе —
+                        // пустая строка съела бы высоту и разъехалась с соседями.
+                        if let caption = entry.userCaption {
+                            Text(caption)
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
                     Spacer(minLength: 0)
                     if isMounted {
                         Circle()

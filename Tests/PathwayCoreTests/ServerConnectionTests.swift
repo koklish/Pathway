@@ -186,7 +186,36 @@ struct ServerConnectionTests {
 
         _ = await connection.connect(to: server, user: "alex", password: "секрет", remember: true)
 
-        #expect(credentials.load(for: server)?.password == "секрет")
+        // Под адресом с логином: он и служит ключом, чтобы пароли двух учётных
+        // записей одного сервера не перезаписывали друг друга.
+        #expect(credentials.load(for: server.with(user: "alex"))?.password == "секрет")
+    }
+
+    @Test("пароль, сохранённый до появления логина в адресе, продолжает подходить")
+    func findsLegacyPasswordSavedWithoutUser() async throws {
+        let (connection, mounter, credentials, _) = makeConnection(.mounted(URL(fileURLWithPath: "/Volumes/Общие")))
+        // Так запись выглядит у коллег, обновившихся с прежней версии: логина в
+        // ключе нет. Без запасного поиска их пароли перестали бы находиться.
+        try credentials.save(user: "alex", password: "старый", for: server)
+
+        _ = await connection.connect(to: server.with(user: "alex"), remember: false)
+
+        #expect(mounter.lastPassword == "старый")
+    }
+
+    @Test("смена логина в настройках переносит закладку на новый адрес")
+    func changingUserMovesBookmark() throws {
+        let (connection, _, _, bookmarks) = makeConnection(.needsAuth)
+        let alex = server.with(user: "alex")
+        bookmarks.remember(alex)
+
+        connection.updateSettings(for: alex, user: "ivan", password: "другой", isGuest: false)
+
+        // Адрес хоста не менялся, изменилась только учётная запись — но она часть
+        // адреса, поэтому запись обязана переехать, а не остаться прежней. По
+        // старому условию (сравнение с newAddress) она ушла бы в setGuest.
+        #expect(bookmarks.items.count == 1)
+        #expect(bookmarks.items.first?.server?.user == "ivan")
     }
 
     @Test("без галочки «Запомнить» пароль не сохраняется")
@@ -223,6 +252,39 @@ struct ServerConnectionTests {
         _ = await connection.connect(to: server, asGuest: true, remember: false)
 
         #expect(bookmarks.items.first?.isGuest == true)
+    }
+
+    @Test("подключение под логином запоминает его в адресе закладки")
+    func rememberedBookmarkCarriesUser() async throws {
+        let (connection, _, _, bookmarks) = makeConnection(.mounted(URL(fileURLWithPath: "/Volumes/MAIN")))
+
+        _ = await connection.connect(to: server, user: "ivan", password: "секрет", remember: true)
+
+        // Без логина в адресе закладка легла бы под общий ключ, и подключение
+        // вторым пользователем вытеснило бы её вместе с паролем.
+        let saved = try #require(bookmarks.items.first)
+        #expect(saved.server?.user == "ivan")
+    }
+
+    @Test("два пользователя подряд дают две закладки, а не одну")
+    func twoUsersLeaveTwoBookmarks() async {
+        let (connection, _, _, bookmarks) = makeConnection(.mounted(URL(fileURLWithPath: "/Volumes/MAIN")))
+
+        _ = await connection.connect(to: server, user: "ivan", password: "первый", remember: true)
+        _ = await connection.connect(to: server, user: "petr", password: "второй", remember: true)
+
+        #expect(bookmarks.items.count == 2)
+    }
+
+    @Test("пароли двух пользователей одного сервера не перезаписывают друг друга")
+    func twoUsersKeepSeparatePasswords() async {
+        let (connection, _, credentials, _) = makeConnection(.mounted(URL(fileURLWithPath: "/Volumes/MAIN")))
+
+        _ = await connection.connect(to: server, user: "ivan", password: "первый", remember: true)
+        _ = await connection.connect(to: server, user: "petr", password: "второй", remember: true)
+
+        #expect(credentials.load(for: server.with(user: "ivan"))?.password == "первый")
+        #expect(credentials.load(for: server.with(user: "petr"))?.password == "второй")
     }
 
     // MARK: - Состояние подключения
@@ -373,6 +435,8 @@ struct ServerConnectionTests {
 
         connection.updateSettings(for: server, user: "boris", password: "", isGuest: false)
 
+        // Адрес записи без логина — она сохранена прежней версией и остаётся на
+        // своём ключе: меняется логин внутри неё, а не сам ключ.
         let stored = credentials.load(for: server)
         #expect(stored?.user == "boris")
         #expect(stored?.password == "секрет")
@@ -411,6 +475,64 @@ struct ServerConnectionTests {
         #expect(bookmarks.items.count == 1)
         #expect(bookmarks.items.first?.isGuest == false)
         #expect(bookmarks.items.first?.server?.host == "nas.local")
+    }
+
+    @Test("две учётные записи на один ресурс живут как отдельные закладки")
+    func keepsBookmarksPerUser() throws {
+        let defaults = UserDefaults(suiteName: "tests.users.\(UUID().uuidString)")!
+        let bookmarks = ServerBookmarks(defaults: defaults)
+        let ivan = try #require(ServerAddress.parse("smb://ivan@nas.local/MAIN"))
+        let petr = try #require(ServerAddress.parse("smb://petr@nas.local/MAIN"))
+
+        bookmarks.remember(ivan)
+        bookmarks.remember(petr)
+
+        // Вторая запись не вытеснила первую: до появления логина в ключе
+        // remember удалял «ту же» закладку и оставлял одну.
+        #expect(bookmarks.items.count == 2)
+        #expect(bookmarks.bookmark(for: ivan) != nil)
+        #expect(bookmarks.bookmark(for: petr) != nil)
+    }
+
+    @Test("удаление одной учётной записи не трогает соседнюю")
+    func removingOneUserKeepsOther() throws {
+        let defaults = UserDefaults(suiteName: "tests.users.\(UUID().uuidString)")!
+        let bookmarks = ServerBookmarks(defaults: defaults)
+        let ivan = try #require(ServerAddress.parse("smb://ivan@nas.local/MAIN"))
+        let petr = try #require(ServerAddress.parse("smb://petr@nas.local/MAIN"))
+        bookmarks.remember(ivan)
+        bookmarks.remember(petr)
+
+        bookmarks.remove(ivan)
+
+        #expect(bookmarks.items.count == 1)
+        #expect(bookmarks.bookmark(for: petr) != nil)
+        #expect(bookmarks.bookmark(for: ivan) == nil)
+    }
+
+    @Test("гость и обычный вход на один адрес — две разные записи")
+    func guestIsSeparateBookmark() throws {
+        let defaults = UserDefaults(suiteName: "tests.users.\(UUID().uuidString)")!
+        let bookmarks = ServerBookmarks(defaults: defaults)
+        // Один и тот же адрес без логина: гостевой вход — это и есть отсутствие
+        // логина, поэтому различать записи может только идентификатор, а не
+        // строка адреса. Без разделения вторая запись вытеснила бы первую.
+        let server = try #require(ServerAddress.parse("smb://nas.local/MAIN"))
+
+        bookmarks.remember(server, isGuest: false)
+        bookmarks.remember(server, isGuest: true)
+
+        #expect(bookmarks.items.count == 2)
+        #expect(bookmarks.items.filter(\.isGuest).count == 1)
+    }
+
+    @Test("закладка без логина сохраняет прежний идентификатор")
+    func bookmarkWithoutUserKeepsLegacyID() throws {
+        // Идентификатор записей, сохранённых до появления логина, обязан
+        // остаться прежним: иначе закладки коллег осиротели бы после обновления.
+        let anonymous = try #require(ServerAddress.parse("smb://nas.local/Share"))
+
+        #expect(ServerBookmark(anonymous).id == "smb://nas.local/Share")
     }
 
     @Test("отмена пользователем читается как отмена, а не как «ошибка -128»")
