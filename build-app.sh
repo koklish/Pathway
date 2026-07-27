@@ -20,11 +20,29 @@ if [ ! -f "$ROOT/Resources/AppIcon.icns" ] || [ "$ROOT/Resources/AppIcon.svg" -n
     "$ROOT/Tools/make-icon.sh"
 fi
 
+BIN="$(swift build -c "$CONFIG" --show-bin-path)"
+
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$(swift build -c "$CONFIG" --show-bin-path)/Pathway" "$APP/Contents/MacOS/Pathway"
+cp "$BIN/Pathway" "$APP/Contents/MacOS/Pathway"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+
+# Ресурсные бандлы таргетов (заготовки документов в Pathway_PathwayCore.bundle).
+# Без этого шага Bundle.module не находит бандл и падает с fatalError внутри
+# сгенерированного SPM аксессора — причём не при запуске, а при первом создании
+# документа, поэтому сборка выглядит рабочей и ошибка уезжает к коллегам.
+#
+# Именно Contents/Resources, а не рядом с бинарником: Bundle.module проверяет
+# Bundle.main.resourceURL первым, а в Contents/MacOS codesign отказывается
+# подписывать — «bundle format unrecognized», своего Info.plist у SPM-бандла нет.
+#
+# Копируются все *.bundle, а не известный по имени: ресурсы в новом таргете
+# иначе повторили бы ту же ошибку молча.
+for bundle in "$BIN"/*.bundle; do
+    [ -e "$bundle" ] || continue
+    cp -R "$bundle" "$APP/Contents/Resources/"
+done
 
 # Подписываем бандл целиком. Без этого шага подпись ставит линковщик — только на
 # исполняемый файл, с идентификатором «Pathway» и без запечатанных ресурсов.
@@ -38,6 +56,12 @@ cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 # приложения неопределёнными и чаще переспрашивает про доступ к файлам.
 codesign --force --sign - --identifier com.pathway.filemanager \
     --entitlements "$ROOT/Resources/Pathway.entitlements" "$APP"
+
+# Заготовки проверяем в собранном бандле, а не только тестами: тесты запускаются
+# из .build, где ресурсный бандл лежит рядом с тестовым бинарником и находится
+# всегда. Забытый шаг копирования выше они не заметили бы — ровно так версия 1.2.0
+# и уехала с крашем при создании документа, при 501 зелёном тесте.
+"$ROOT/Tools/check-bundle.sh" "$APP"
 
 # Запущенную копию сначала закрываем — иначе замена бандла на живом процессе
 # оставит приложение в нерабочем состоянии.

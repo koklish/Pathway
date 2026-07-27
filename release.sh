@@ -137,10 +137,20 @@ if [ ! -f "$ROOT/Resources/AppIcon.icns" ] || [ "$ROOT/Resources/AppIcon.svg" -n
     "$ROOT/Tools/make-icon.sh"
 fi
 
+BIN="$(swift build -c release --show-bin-path)"
+
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$(swift build -c release --show-bin-path)/Pathway" "$APP/Contents/MacOS/Pathway"
+cp "$BIN/Pathway" "$APP/Contents/MacOS/Pathway"
 cp "$PLIST" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+
+# Ресурсные бандлы таргетов (см. тот же шаг в build-app.sh с разбором причин):
+# без них создание документа падает с fatalError уже у коллег. Именно
+# Contents/Resources — в Contents/MacOS codesign их не принимает.
+for bundle in "$BIN"/*.bundle; do
+    [ -e "$bundle" ] || continue
+    cp -R "$bundle" "$APP/Contents/Resources/"
+done
 
 # Тот же идентификатор подписи, что в build-app.sh: macOS помнит выданные
 # разрешения по идентичности подписи, и обновлённая копия должна остаться для
@@ -152,6 +162,10 @@ codesign --force --sign - --identifier com.pathway.filemanager \
 # и лучше узнать о сломанной подписи здесь, чем после того, как архив уже
 # опубликован и коллеги начали его скачивать.
 codesign --verify --deep --strict "$APP"
+
+# Состав бандла проверяем до публикации: swift test этот класс ошибок не ловит
+# (см. комментарий в Tools/check-bundle.sh), а опубликованный релиз не отозвать.
+"$ROOT/Tools/check-bundle.sh" "$APP"
 
 ARCHIVE="$BUILD_DIR/$APP_NAME-$VERSION.zip"
 # ditto, а не zip: сохраняет расширенные атрибуты и симлинки внутри бандла,

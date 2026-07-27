@@ -7,11 +7,24 @@ struct SidebarView: View {
     let model: BrowserModel
     let connection: ServerConnection
     let actions: FolderActions
+    let update: UpdateService
     let onNewConnection: () -> Void
     let onEditServer: (ServerAddress) -> Void
     @State private var sidebar = SidebarModel()
 
     var body: some View {
+        // Баннер обновления вне ScrollView: внутри LazyVStack он уезжал бы за
+        // нижний край на развёрнутом дереве «Мест» — то есть пропадал бы ровно
+        // тогда, когда список длинный и человек далеко от начала.
+        VStack(spacing: 0) {
+            scrollingContent
+            UpdateBannerView(service: update)
+        }
+        .background(.regularMaterial)
+        .animation(.easeOut(duration: 0.2), value: update.state)
+    }
+
+    private var scrollingContent: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 FavoritesSection(model: model, actions: actions)
@@ -50,7 +63,6 @@ struct SidebarView: View {
             .padding(.vertical, 8)
         }
         .scrollContentBackground(.hidden)
-        .background(.regularMaterial)
         .onAppear { revealCurrentFolder() }
         .onChange(of: model.pane.path) { _, _ in revealCurrentFolder() }
     }

@@ -30,6 +30,7 @@ struct MainWindow: View {
                 model: model,
                 connection: connection,
                 actions: actions,
+                update: updates,
                 onNewConnection: {
                     connectModel.startNewConnection()
                     showConnectServer = true
