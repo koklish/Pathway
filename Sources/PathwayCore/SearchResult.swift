@@ -27,6 +27,9 @@ public struct SearchResult: Identifiable, Hashable, Sendable {
     /// Индексы совпавших букв в `name` — для подсветки.
     public let matchedIndices: [Int]
     public let isDirectory: Bool
+    /// Фрагмент содержимого вокруг совпадения. `nil` у находки по имени: ей
+    /// показывать нечего, и пустой фрагмент занимал бы строку впустую.
+    public var snippet: ContentSnippet?
 
     public init(
         url: URL,
@@ -34,7 +37,8 @@ public struct SearchResult: Identifiable, Hashable, Sendable {
         source: Source,
         score: Int,
         matchedIndices: [Int] = [],
-        isDirectory: Bool = false
+        isDirectory: Bool = false,
+        snippet: ContentSnippet? = nil
     ) {
         self.url = url
         self.name = name
@@ -42,6 +46,7 @@ public struct SearchResult: Identifiable, Hashable, Sendable {
         self.score = score
         self.matchedIndices = matchedIndices
         self.isDirectory = isDirectory
+        self.snippet = snippet
     }
 
     public var isInsideArchive: Bool {

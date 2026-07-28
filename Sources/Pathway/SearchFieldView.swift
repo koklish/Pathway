@@ -13,6 +13,13 @@ struct SearchFieldView: View {
     @Environment(AppState.self) private var appState
     @FocusState private var focused: Bool
 
+    /// Подсказка в пустом поле меняется вместе с режимом: иначе включённый
+    /// переключатель — единственный признак того, что поиск идёт дольше
+    /// обычного, и о нём легко забыть.
+    private var placeholder: String {
+        search.searchesContent ? "Поиск в именах и содержимом" : "Поиск в папке и архивах"
+    }
+
     var body: some View {
         @Bindable var search = search
         return HStack(spacing: 6) {
@@ -20,7 +27,7 @@ struct SearchFieldView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
 
-            TextField("Поиск в папке и архивах", text: $search.query)
+            TextField(placeholder, text: $search.query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .focused($focused)
@@ -33,6 +40,33 @@ struct SearchFieldView: View {
                     search.cancel()
                     focused = false
                 }
+
+            // Переключатель поиска по содержимому. Виден всегда, а не только
+            // при непустом запросе: человек должен знать о возможности до того,
+            // как начал набирать, — иначе о ней узнают лишь случайно.
+            Button {
+                search.searchesContent.toggle()
+                // Перезапуск, если выдача уже есть: включить режим и смотреть на
+                // старый результат — значит решить, что он не работает.
+                if search.isActive, !search.activeQuery.isEmpty {
+                    search.query = search.activeQuery
+                    search.search(in: directory)
+                }
+            } label: {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 11))
+                    .foregroundStyle(search.searchesContent ? Color.white : Color.secondary)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(search.searchesContent ? Color.accentColor : Color.clear)
+                    }
+            }
+            .buttonStyle(.plain)
+            .help(search.searchesContent
+                ? "Искать в содержимом файлов — включено. Поиск идёт дольше."
+                : "Искать в содержимом файлов")
 
             // Индикатора хода здесь нет: он в строке под списком, где рядом с
             // ним стоят счётчики. Два места, показывающие одно и то же,

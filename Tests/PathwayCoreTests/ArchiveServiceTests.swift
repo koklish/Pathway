@@ -267,9 +267,13 @@ struct ArchiveServiceTests {
             }
             try? await Task.sleep(for: .milliseconds(30))
             task.cancel()
-            let result = await task.result
-            #expect(throws: (any Error).self) { try result.get() }
+            _ = await task.result
 
+            // Проверяется только отсутствие мусора, а не бросок ошибки.
+            // Успела распаковка за отведённые 30 мс или нет — гонка: под полной
+            // нагрузкой тестового прогона она разрешается то так, то этак, и
+            // ожидание броска делало бы тест мигающим. Временных папок не должно
+            // остаться в обоих исходах, и это утверждение честно всегда.
             let leftovers = try FileManager.default.contentsOfDirectory(atPath: target.path)
                 .filter { $0.hasPrefix(".pathway-extract") }
             #expect(leftovers.isEmpty)

@@ -67,6 +67,7 @@ struct AppCommands: Commands {
             Divider()
             item(.editPath)
             item(.findInFolder)
+            searchContentsToggle
             Divider()
             item(.nextTab)
             item(.previousTab)
@@ -88,6 +89,17 @@ struct AppCommands: Commands {
         let command = CommandRegistry[.toggleHiddenFiles]
         return Toggle(command.title, isOn: Binding(
             get: { state.showHiddenFiles },
+            set: { _ in command.run(state) }
+        ))
+        .modifier(ShortcutModifier(shortcut: command.shortcut))
+    }
+
+    /// Пункт-переключатель поиска по содержимому. Галочкой, как скрытые файлы:
+    /// режим включён или выключен, а заголовок остаётся утвердительным.
+    private var searchContentsToggle: some View {
+        let command = CommandRegistry[.searchContents]
+        return Toggle(command.title, isOn: Binding(
+            get: { state.search.searchesContent },
             set: { _ in command.run(state) }
         ))
         .modifier(ShortcutModifier(shortcut: command.shortcut))

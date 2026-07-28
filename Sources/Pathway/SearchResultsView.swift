@@ -169,12 +169,16 @@ struct SearchResultsView: View {
     /// Что именно сейчас происходит. Полоса показывает «сколько», подпись —
     /// «чего»: без неё 50 % на большой папке выглядят как остановка.
     private var progressText: String {
+        let progress = search.progress
         var parts: [String] = []
-        if search.progress.totalArchives > 0 {
-            // Вторая фаза: архивы со точным знаменателем.
-            parts.append("архивы: \(search.progress.scannedArchives) из \(search.progress.totalArchives)")
+        // Фаза называется по той, что идёт сейчас: показывать все три разом
+        // значило бы заставить искать глазами, какая из них движется.
+        if progress.totalReadableFiles > 0 {
+            parts.append("читаю файлы: \(progress.readFiles) из \(progress.totalReadableFiles)")
+        } else if progress.totalArchives > 0 {
+            parts.append("архивы: \(progress.scannedArchives) из \(progress.totalArchives)")
         } else {
-            parts.append("папки: \(search.progress.scannedDirectories.formatted())")
+            parts.append("папки: \(progress.scannedDirectories.formatted())")
         }
         parts.append("найдено \(search.results.count)")
         return parts.joined(separator: "  ·  ")
@@ -183,13 +187,23 @@ struct SearchResultsView: View {
     /// Итог: сколько нашли и где искали.
     private var summaryBar: some View {
         HStack(spacing: 8) {
-            Text("Найдено \(search.results.count) · просмотрено \(search.progress.scannedFiles.formatted())")
+            Text(summaryText)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
+    }
+
+    /// Итог: сколько нашли, сколько имён просмотрели и сколько файлов прочли.
+    ///
+    /// Число прочитанных приписывается только при включённом режиме: иначе «и
+    /// прочитано 0 файлов» стояло бы в каждом обычном поиске.
+    private var summaryText: String {
+        let base = "Найдено \(search.results.count) · просмотрено \(search.progress.scannedFiles.formatted())"
+        guard search.progress.readFiles > 0 else { return base }
+        return base + " · прочитано \(search.progress.readFiles.formatted())"
     }
 
     /// Полоса о том, чего поиск не посмотрел.
@@ -205,7 +219,7 @@ struct SearchResultsView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)
-            if !search.report.skipped.isEmpty {
+            if !search.report.skipped.isEmpty || !search.report.skippedFiles.isEmpty {
                 Button("Проверить всё равно") { search.searchIncludingSkipped() }
                     .buttonStyle(.link)
                     .font(.system(size: 11))
@@ -222,10 +236,21 @@ struct SearchResultsView: View {
             let tail = search.report.skipped.count > 2 ? " и ещё \(search.report.skipped.count - 2)" : ""
             parts.append("не заглядывал в большие архивы: \(names)\(tail)")
         }
-        if !search.report.failed.isEmpty {
-            parts.append("не удалось прочитать архивов: \(search.report.failed.count)")
+        // Файлы отдельной фразой, а не общим счётчиком с архивами: «3 архива и
+        // 12 файлов» понятнее, чем «15 объектов», — человек по ней понимает,
+        // чего именно недостаёт в выдаче.
+        if !search.report.skippedFiles.isEmpty {
+            let names = search.report.skippedFiles.prefix(2).map(\.url.lastPathComponent).joined(separator: ", ")
+            let tail = search.report.skippedFiles.count > 2
+                ? " и ещё \(search.report.skippedFiles.count - 2)"
+                : ""
+            parts.append("не читал содержимое больших файлов: \(names)\(tail)")
         }
-        return parts.joined(separator: "; ").prefix(1).uppercased() + parts.joined(separator: "; ").dropFirst()
+        if !search.report.failed.isEmpty {
+            parts.append("не удалось прочитать: \(search.report.failed.count)")
+        }
+        let text = parts.joined(separator: "; ")
+        return text.prefix(1).uppercased() + text.dropFirst()
     }
 
     /// Открывает находку: файл — сразу, запись архива — через извлечение.
@@ -320,6 +345,16 @@ private struct SearchResultRow: View {
                             .truncationMode(.head)
                     }
                 }
+
+                // Фрагмент содержимого — третьей строкой. Ради него поиск по
+                // содержимому и затевался: без контекста «нашлось в 40 файлах»
+                // бесполезно, пришлось бы открывать каждый.
+                if let snippet = result.snippet {
+                    highlighted(snippet)
+                        .font(.system(size: 10))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -336,12 +371,27 @@ private struct SearchResultRow: View {
     /// Подсветка объясняет, почему файл найден: при нечётком совпадении связь
     /// имени с запросом иначе не видна вовсе.
     private var highlightedName: Text {
-        let matched = Set(result.matchedIndices)
-        return Array(result.name).enumerated().reduce(Text("")) { text, pair in
+        highlight(result.name, at: result.matchedIndices, base: nil)
+    }
+
+    /// Фрагмент содержимого с выделенным совпадением.
+    private func highlighted(_ snippet: ContentSnippet) -> Text {
+        highlight(snippet.text, at: snippet.matchedIndices, base: .secondary)
+    }
+
+    /// Строка, у которой часть символов выделена цветом и жирностью.
+    ///
+    /// Посимвольная склейка `Text`, а не `AttributedString`: подсветка идёт по
+    /// индексам символов, а перевод их в диапазоны `AttributedString` потребовал
+    /// бы возни с `Character` против `UTF-8`-смещений ради того же результата.
+    private func highlight(_ string: String, at indices: [Int], base: Color?) -> Text {
+        let matched = Set(indices)
+        return Array(string).enumerated().reduce(Text("")) { text, pair in
             let character = Text(String(pair.element))
-            return text + (matched.contains(pair.offset)
-                ? character.foregroundColor(.accentColor).bold()
-                : character)
+            if matched.contains(pair.offset) {
+                return text + character.foregroundColor(.accentColor).bold()
+            }
+            return text + (base.map { character.foregroundColor($0) } ?? character)
         }
     }
 }

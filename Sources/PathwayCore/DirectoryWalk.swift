@@ -21,6 +21,10 @@ public enum DirectoryWalk {
     public struct Result: Sendable {
         public var files: [Entry] = []
         public var archives: [URL] = []
+        /// Файлы, из которых имеет смысл читать текст. Собираются тем же
+        /// проходом, а не отдельным обходом: обход — самая дорогая часть поиска,
+        /// и повторять его ради отбора по расширению значило бы удвоить цену.
+        public var readable: [URL] = []
         /// Папок, ещё не обойдённых, на момент выдачи этой порции.
         ///
         /// Знаменатель для доли выполненного: общего числа файлов заранее нет,
@@ -53,6 +57,7 @@ public enum DirectoryWalk {
         walk(root: root, isCancelled: isCancelled) { batch in
             result.files.append(contentsOf: batch.files)
             result.archives.append(contentsOf: batch.archives)
+            result.readable.append(contentsOf: batch.readable)
         }
         return result
     }
@@ -108,7 +113,11 @@ public enum DirectoryWalk {
                     result.files.append(Entry(url: url, name: name, isDirectory: true))
                 } else {
                     result.files.append(Entry(url: url, name: name, isDirectory: false))
-                    if ArchiveService.isArchive(url) { result.archives.append(url) }
+                    if ArchiveService.isArchive(url) {
+                        result.archives.append(url)
+                    } else if SystemTextExtractor.isReadable(url) {
+                        result.readable.append(url)
+                    }
                 }
             }
 

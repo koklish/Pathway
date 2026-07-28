@@ -14,6 +14,13 @@ public final class SearchModel {
     /// запуск по Enter.
     public var query = ""
 
+    /// Искать и в содержимом файлов, а не только в именах.
+    ///
+    /// Сохраняется между поисками, но **не между запусками приложения**: режим
+    /// дорогой, и включённый вчера да забытый он дал бы необъяснимо медленный
+    /// поиск сегодня. Осознанный отказ от персистентности, а не упущение.
+    public var searchesContent = false
+
     public private(set) var results: [SearchResult] = []
     public private(set) var isSearching = false
     /// Запрос, по которому получена текущая выдача. Отличается от `query`, пока
@@ -64,8 +71,11 @@ public final class SearchModel {
         activeQuery = trimmed
         root = directory
 
-        task = Task { [engine] in
-            for await event in engine.search(query: trimmed, in: directory, ignoringSizeLimit: ignoringSizeLimit) {
+        task = Task { [engine, searchesContent] in
+            for await event in engine.search(
+                query: trimmed, in: directory,
+                searchesContent: searchesContent, ignoringSizeLimit: ignoringSizeLimit
+            ) {
                 if Task.isCancelled { return }
                 switch event {
                 case .results(let batch):
@@ -76,6 +86,14 @@ public final class SearchModel {
                     // поиска, стало бы невозможно. Внутри порции порядок по
                     // совпадению остаётся — его расставляет движок.
                     results.append(contentsOf: batch)
+                case .snippet(let url, let snippet):
+                    // Обновление на месте, а не добавление: файл нашёлся и по
+                    // имени, и по содержимому, но находка одна. Позиция строки
+                    // при этом не меняется — список под курсором не прыгает, что
+                    // и было причиной не пересортировывать выдачу.
+                    if let index = results.firstIndex(where: { $0.url == url && !$0.isInsideArchive }) {
+                        results[index].snippet = snippet
+                    }
                 case .progress(let current):
                     progress = current
                     fraction = max(fraction, current.fraction)

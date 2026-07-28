@@ -343,4 +343,102 @@ struct SearchModelTests {
             #expect(model.errorMessage != nil)
         }
     }
+
+    // MARK: - Поиск по содержимому
+
+    @Test("режим содержимого сохраняется между поисками")
+    func contentModeSurvivesSearches() async throws {
+        try await withTempDirAsync { dir in
+            try Data("Поставщик ООО Ромашка".utf8)
+                .write(to: dir.appendingPathComponent("акт.txt"))
+            let model = makeModel()
+            model.searchesContent = true
+
+            model.query = "ромашка"
+            model.search(in: dir)
+            await waitUntilDone(model)
+            #expect(model.results.count == 1)
+
+            // Второй поиск подряд: флаг не должен сброситься сам.
+            model.query = "ромашка"
+            model.search(in: dir)
+            await waitUntilDone(model)
+            #expect(model.searchesContent)
+            #expect(model.results.count == 1)
+        }
+    }
+
+    @Test("закрытие поиска не сбрасывает режим содержимого")
+    func cancelKeepsContentMode() async throws {
+        try await withTempDirAsync { dir in
+            let model = makeModel()
+            model.searchesContent = true
+            model.query = "договор"
+            model.search(in: dir)
+            await waitUntilDone(model)
+
+            model.cancel()
+
+            // Режим — настройка поиска, а не его состояние: сбрасывать её на
+            // закрытии значило бы заставлять включать заново каждый раз.
+            #expect(model.searchesContent)
+        }
+    }
+
+    @Test("при выключенном режиме содержимое не ищется")
+    func doesNotSearchContentWhenDisabled() async throws {
+        try await withTempDirAsync { dir in
+            try Data("Поставщик ООО Ромашка".utf8)
+                .write(to: dir.appendingPathComponent("акт.txt"))
+            let model = makeModel()
+
+            model.query = "ромашка"
+            model.search(in: dir)
+            await waitUntilDone(model)
+
+            #expect(model.results.isEmpty)
+        }
+    }
+
+    @Test("фрагмент дописывается к показанной строке, а не добавляет вторую")
+    func snippetUpdatesExistingRow() async throws {
+        try await withTempDirAsync { dir in
+            try Data("внутри тоже ромашка".utf8)
+                .write(to: dir.appendingPathComponent("ромашка.txt"))
+            let model = makeModel()
+            model.searchesContent = true
+
+            model.query = "ромашка"
+            model.search(in: dir)
+            await waitUntilDone(model)
+
+            #expect(model.results.count == 1)
+            #expect(model.results.first?.snippet != nil)
+            // Подсветка имени сохранена: строка та же, дописан только фрагмент.
+            #expect(model.results.first?.matchedIndices.isEmpty == false)
+        }
+    }
+
+    @Test("searchIncludingSkipped снимает порог и по файлам тоже")
+    func forceSearchLiftsFileThreshold() async throws {
+        try await withTempDirAsync { dir in
+            let text = String(repeating: "а", count: 4096) + "Ромашка"
+            try Data(text.utf8).write(to: dir.appendingPathComponent("большой.log"))
+            let model = SearchModel(engine: SearchEngine(
+                listing: StubListing(),
+                contentLimits: ContentSearchLimits(localFileBytes: 1024)))
+            model.searchesContent = true
+
+            model.query = "ромашка"
+            model.search(in: dir)
+            await waitUntilDone(model)
+            #expect(model.results.isEmpty)
+            #expect(model.report.skippedFiles.count == 1)
+
+            model.searchIncludingSkipped()
+            await waitUntilDone(model)
+            #expect(model.results.count == 1)
+            #expect(model.report.skippedFiles.isEmpty)
+        }
+    }
 }

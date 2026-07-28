@@ -43,7 +43,7 @@ public enum CommandID: String, CaseIterable, Sendable {
     // Вид
     case toggleHiddenFiles, refresh
     // Переход
-    case goBack, goForward, goUp, editPath, findInFolder, toggleFavorite
+    case goBack, goForward, goUp, editPath, findInFolder, searchContents, toggleFavorite
     // Вкладки
     case newTab, closeTab, nextTab, previousTab, openInNewTab
 }
@@ -293,6 +293,24 @@ public enum CommandRegistry {
             icon: "magnifyingglass",
             isEnabled: { _ in true },
             run: { $0.pendingSearch = true }
+        ),
+        AppCommand(
+            id: .searchContents,
+            title: "Искать в содержимом файлов",
+            // ⌥⌘F: рядом с ⌘F по смыслу и свободно — стандартного пункта с этим
+            // сочетанием в «Правке» нет, перехватывать у текстовых полей нечего.
+            shortcut: Shortcut(.character("f"), [.command, .option]),
+            icon: "doc.text.magnifyingglass",
+            isEnabled: { _ in true },
+            run: { state in
+                state.search.searchesContent.toggle()
+                // Перезапуск открытой выдачи: смотреть на прежний результат
+                // после включения режима — значит решить, что он не работает.
+                if state.search.isActive, !state.search.activeQuery.isEmpty {
+                    state.search.query = state.search.activeQuery
+                    state.search.search(in: state.browser.commandFolder)
+                }
+            }
         ),
         AppCommand(
             id: .toggleFavorite,

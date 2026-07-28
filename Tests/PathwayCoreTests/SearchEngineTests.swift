@@ -57,6 +57,9 @@ struct SearchEngineTests {
         for await event in engine.search(query: query, in: dir) {
             switch event {
             case .results(let batch): results += batch
+            // Фрагментов здесь не бывает: поиск по содержимому выключен по
+            // умолчанию, и эти тесты его не включают.
+            case .snippet: break
             case .progress(let current): progress = current
             case .finished(let final): report = final
             }
