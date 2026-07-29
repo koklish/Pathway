@@ -148,6 +148,9 @@ private struct FavoriteRow: View {
     @Binding var insertionIndex: Int?
     /// Подсветка, когда файлы бросают в саму папку.
     @State private var isDropTarget = false
+    /// Открыт ли лист выбора иконки. Состояние локально строке: пикеру нужны
+    /// только сама закладка и стор, выносить его в AppState незачем.
+    @State private var isPickingIcon = false
 
     private var isSelected: Bool { model.pane.path.path == favorite.url.path }
 
@@ -156,10 +159,7 @@ private struct FavoriteRow: View {
             model.navigate(to: favorite.url)
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: "pin")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
+                FavoriteIcon(icon: favorite.icon)
                 Text(favorite.name)
                     .font(.system(size: 13))
                     .lineLimit(1)
@@ -175,7 +175,12 @@ private struct FavoriteRow: View {
         .overlay(alignment: .top) { insertionLine }
         // Перетаскивание самой строки — для перестановки внутри секции.
         .draggable(FavoriteTransfer(id: favorite.id.uuidString, path: favorite.url.path)) {
-            Label(favorite.name, systemImage: "pin")
+            // Preview собирается вручную, а не Label(systemImage:): у закладки
+            // может быть эмодзи, которую Label с именем символа не нарисует.
+            HStack(spacing: 8) {
+                FavoriteIcon(icon: favorite.icon)
+                Text(favorite.name)
+            }
         }
         .dropDestination(for: DroppedItem.self) { items, _ in
             handleDrop(items)
@@ -189,10 +194,22 @@ private struct FavoriteRow: View {
             FolderMenuItems(folder: favorite.url, actions: actions, model: model)
             Divider()
             Button {
+                isPickingIcon = true
+            } label: {
+                MenuLabel("Выбрать иконку…", symbol: "face.smiling")
+            }
+            Button {
                 actions.favorites.remove(favorite.id)
             } label: {
                 MenuLabel("Убрать из избранного", symbol: "star.slash", color: .systemYellow)
             }
+        }
+        .sheet(isPresented: $isPickingIcon) {
+            FavoriteIconPicker(
+                favorite: favorite,
+                store: actions.favorites,
+                onClose: { isPickingIcon = false }
+            )
         }
     }
 

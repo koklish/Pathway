@@ -178,4 +178,60 @@ struct FavoritesStoreTests {
 
         #expect(store.items.last?.name == "Projects")
     }
+
+    @Test("назначенная иконка переживает пересоздание стора")
+    func iconPersistsAcrossInstances() {
+        let defaults = makeDefaults()
+        let store = FavoritesStore(defaults: defaults)
+        store.add(projects)
+        let id = store.items.last!.id
+
+        store.setIcon(id, icon: "star")
+
+        let reopened = FavoritesStore(defaults: defaults)
+        #expect(reopened.items.last?.icon == "star")
+    }
+
+    @Test("сброс возвращает иконку по умолчанию")
+    func iconResetReturnsToDefault() {
+        let store = FavoritesStore(defaults: makeDefaults())
+        store.add(projects)
+        let id = store.items.last!.id
+        store.setIcon(id, icon: "star")
+
+        store.setIcon(id, icon: nil)
+
+        #expect(store.items.last?.icon == nil)
+    }
+
+    @Test("пустая строка означает сброс, а не пустую иконку")
+    func blankIconMeansReset() {
+        let store = FavoritesStore(defaults: makeDefaults())
+        store.add(projects)
+        let id = store.items.last!.id
+        store.setIcon(id, icon: "star")
+
+        store.setIcon(id, icon: "  ")
+
+        #expect(store.items.last?.icon == nil)
+    }
+
+    @Test("запись прошлой версии декодируется без иконки, а не ломает загрузку")
+    func storedWithoutIconDecodesWithNilIcon() {
+        let defaults = makeDefaults()
+        // JSON собран вручную без ключа icon — так его записала бы версия,
+        // вышедшая до появления поля.
+        let old: [[String: Any]] = [[
+            "id": UUID().uuidString,
+            "url": projects.absoluteString,
+            "name": "Projects",
+        ]]
+        defaults.set(try! JSONSerialization.data(withJSONObject: old), forKey: "favorites.items")
+        defaults.set(true, forKey: "favorites.seeded")
+
+        let store = FavoritesStore(defaults: defaults)
+
+        #expect(store.items.count == 1)
+        #expect(store.items.first?.icon == nil)
+    }
 }

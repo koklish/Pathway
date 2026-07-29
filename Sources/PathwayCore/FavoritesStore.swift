@@ -6,11 +6,18 @@ public struct Favorite: Identifiable, Equatable, Hashable, Sendable, Codable {
     public let id: UUID
     public var url: URL
     public var name: String
+    /// Иконка закладки: имя SF Symbol или эмодзи; nil — стандартная (pin).
+    /// Опционал, а не строка с умолчанием: записи прошлых версий ключа не имеют
+    /// и декодируются с nil без всякой миграции. Строка, а не enum: отличить
+    /// символ от эмодзи может только NSImage на стороне UI, в Core этой проверке
+    /// неоткуда взяться.
+    public var icon: String?
 
-    public init(id: UUID = UUID(), url: URL, name: String? = nil) {
+    public init(id: UUID = UUID(), url: URL, name: String? = nil, icon: String? = nil) {
         self.id = id
         self.url = url
         self.name = name ?? Self.defaultName(for: url)
+        self.icon = icon
     }
 
     /// Имя так, как его показывает Finder: локализованное, если система его переводит.
@@ -92,6 +99,16 @@ public final class FavoritesStore {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         items[index].name = trimmed
+        save()
+    }
+
+    /// Назначает иконку закладке; nil — возврат к стандартной.
+    /// Пустая строка сводится к nil: иначе рендер получил бы «заданную
+    /// иконку», которую нечем нарисовать — ни символа, ни текста.
+    public func setIcon(_ id: Favorite.ID, icon: String?) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = icon?.trimmingCharacters(in: .whitespacesAndNewlines)
+        items[index].icon = trimmed?.isEmpty == false ? trimmed : nil
         save()
     }
 
