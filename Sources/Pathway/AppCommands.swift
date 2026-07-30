@@ -19,6 +19,7 @@ struct AppCommands: Commands {
         CommandGroup(replacing: .newItem) {
             item(.newTab)
             item(.closeTab)
+            item(.pinTab)
             Divider()
             item(.newFolder)
             Divider()
@@ -107,12 +108,19 @@ struct AppCommands: Commands {
         .modifier(ShortcutModifier(shortcut: command.shortcut))
     }
 
-    /// Заголовок избранного зависит от того, закреплена ли папка, — как в
-    /// контекстном меню.
+    /// Заголовки, зависящие от состояния: избранное и закрепление вкладки —
+    /// как в контекстном меню. В реестре у обеих лежит утвердительная форма,
+    /// держать там оба варианта значило бы дублировать команду ради строки.
     private func title(for command: AppCommand) -> String {
-        guard command.id == .toggleFavorite else { return command.title }
-        return state.folderActions.isFavorite(state.browser.commandFolder)
-            ? "Убрать из избранного"
-            : "Добавить в избранное"
+        switch command.id {
+        case .toggleFavorite:
+            return state.folderActions.isFavorite(state.browser.commandFolder)
+                ? "Убрать из избранного"
+                : "Добавить в избранное"
+        case .pinTab:
+            return state.tabs.active.isPinned ? "Открепить вкладку" : "Закрепить вкладку"
+        default:
+            return command.title
+        }
     }
 }

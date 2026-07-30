@@ -16,30 +16,37 @@ struct TabBarView: View {
     @State private var dragging: UUID?
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            // Вкладки прижаты к нижнему краю полосы: активная должна упираться
-            // в адресную строку без зазора, иначе закладка отрывается от
-            // содержимого и читается как висящая кнопка.
-            HStack(alignment: .bottom, spacing: 0) {
-                ForEach(tabs.tabs) { tab in
-                    tabItem(tab)
-                        .onDrag {
-                            dragging = tab.id
-                            // Перетаскивание внутри полосы: содержимое провайдера
-                            // не используется, порядок меняет onDrop по dragging.
-                            return NSItemProvider(object: tab.id.uuidString as NSString)
-                        }
-                        .onDrop(
-                            of: [.text],
-                            delegate: TabDropDelegate(target: tab.id, tabs: tabs, dragging: $dragging)
-                        )
+        GeometryReader { geometry in
+            let layout = TabWidths(
+                available: geometry.size.width,
+                tabs: tabs.tabs,
+                activeID: tabs.active.id
+            )
+            ScrollView(.horizontal, showsIndicators: false) {
+                // Вкладки прижаты к нижнему краю полосы: активная должна упираться
+                // в адресную строку без зазора, иначе закладка отрывается от
+                // содержимого и читается как висящая кнопка.
+                HStack(alignment: .bottom, spacing: 0) {
+                    ForEach(tabs.tabs) { tab in
+                        tabItem(tab, width: layout.width(for: tab))
+                            .onDrag {
+                                dragging = tab.id
+                                // Перетаскивание внутри полосы: содержимое провайдера
+                                // не используется, порядок меняет onDrop по dragging.
+                                return NSItemProvider(object: tab.id.uuidString as NSString)
+                            }
+                            .onDrop(
+                                of: [.text],
+                                delegate: TabDropDelegate(target: tab.id, tabs: tabs, dragging: $dragging)
+                            )
+                    }
+                    newTabButton
+                        .padding(.leading, 6)
+                        .padding(.bottom, 4)
+                    Spacer(minLength: 0)
                 }
-                newTabButton
-                    .padding(.leading, 6)
-                    .padding(.bottom, 4)
-                Spacer(minLength: 0)
+                .padding(.horizontal, 6)
             }
-            .padding(.horizontal, 6)
         }
         .frame(height: 36)
         // Фон полосы притемнён вручную поверх системного, а не взят из
@@ -54,8 +61,11 @@ struct TabBarView: View {
 
     // MARK: - Вкладка
 
-    private func tabItem(_ tab: TabState) -> some View {
+    private func tabItem(_ tab: TabState, width: CGFloat) -> some View {
         let isActive = tab.id == tabs.active.id
+        // Ниже этого предела название и крестик не помещаются — остаётся один
+        // значок, как в браузере при десятке вкладок.
+        let showsTitle = width >= 60
 
         return HStack(spacing: 6) {
             tabIcon(tab)
@@ -63,22 +73,26 @@ struct TabBarView: View {
                 // на себя, обесценивая выделение активной.
                 .opacity(isActive ? 1 : 0.55)
 
-            Text(tab.title)
-                // Активная — полужирным и в полный цвет, остальные приглушены:
-                // вес и контраст текста читаются раньше, чем разница фонов.
-                .font(.callout.weight(isActive ? .semibold : .regular))
-                .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                .lineLimit(1)
-                .truncationMode(.middle)
+            if showsTitle {
+                Text(tab.title)
+                    // Активная — полужирным и в полный цвет, остальные приглушены:
+                    // вес и контраст текста читаются раньше, чем разница фонов.
+                    .font(.callout.weight(isActive ? .semibold : .regular))
+                    .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
 
-            // Распорка прижимает крестик к правому краю: без неё у вкладки с
-            // коротким именем он оказывался посередине.
-            Spacer(minLength: 4)
+                // Распорка прижимает крестик к правому краю: без неё у вкладки с
+                // коротким именем он оказывался посередине.
+                Spacer(minLength: 4)
 
-            closeButton(tab)
+                closeButton(tab)
+            }
         }
-        .padding(.horizontal, 10)
-        .frame(minWidth: 120, maxWidth: 220)
+        // На узкой вкладке отступы урезаны: при 10 pt с каждой стороны на
+        // значок остаётся 8 pt, и он сплющивается.
+        .padding(.horizontal, showsTitle ? 10 : 4)
+        .frame(width: width)
         // На 2 pt ниже полосы: сверху остаётся зазор, снизу закладка упирается
         // в край и переходит в адресную строку.
         .frame(height: 34)
@@ -90,8 +104,12 @@ struct TabBarView: View {
         }
         .help(tab.browser.pane.path.path)
         .contextMenu {
+            Button(tab.isPinned ? "Открепить вкладку" : "Закрепить вкладку") {
+                tab.isPinned ? tabs.unpin(id: tab.id) : tabs.pin(id: tab.id)
+            }
+            Divider()
             Button("Закрыть вкладку") { tabs.close(id: tab.id) }
-                .disabled(tabs.tabs.count == 1)
+                .disabled(!tabs.canClose(id: tab.id))
             Button("Закрыть другие") { tabs.closeOthers(id: tab.id) }
                 .disabled(tabs.tabs.count == 1)
             Button("Закрыть вкладки справа") { tabs.closeToTheRight(of: tab.id) }
@@ -119,7 +137,14 @@ struct TabBarView: View {
     /// полосе было бы нечем.
     @ViewBuilder
     private func tabIcon(_ tab: TabState) -> some View {
-        if tab.isOnNetworkVolume {
+        if tab.isPinned {
+            // Закреплённая вкладка часто безымянна, и значок папки не сказал бы
+            // о ней ничего: булавка объясняет и узость, и отсутствие крестика.
+            Image(systemName: "pin.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(.tint)
+                .frame(width: 16, height: 14)
+        } else if tab.isOnNetworkVolume {
             Image(systemName: "externaldrive.connected.to.line.below")
                 // Символ шире папки при равной высоте, поэтому размер задан
                 // шрифтом, а не рамкой: растянутый до 14×14 квадрата, он
@@ -171,7 +196,9 @@ struct TabBarView: View {
     /// Крестик виден у активной вкладки и под курсором. Место под него занято
     /// всегда: появляясь, он иначе сдвигал бы название.
     private func closeButton(_ tab: TabState) -> some View {
-        let isVisible = tabs.tabs.count > 1 && (tab.id == hovered || tab.id == tabs.active.id)
+        // У закреплённой крестика нет вовсе: кнопка, которая не работает,
+        // выглядит поломкой, а закрепление именно от закрытия и защищает.
+        let isVisible = tabs.canClose(id: tab.id) && (tab.id == hovered || tab.id == tabs.active.id)
 
         return Button {
             tabs.close(id: tab.id)
@@ -208,6 +235,73 @@ struct TabBarView: View {
         }
         .buttonStyle(.plain)
         .help("Новая вкладка (⌘T)")
+    }
+}
+
+/// Ширина вкладок в полосе.
+///
+/// Считается во вью, а не в модели: зависит от размера окна, о котором
+/// PathwayCore не знает и знать не должен. Отдельной структурой, а не парой
+/// выражений в теле body: правило с тремя видами вкладок читается только
+/// целиком.
+///
+/// @MainActor: читает состояние вкладок, а TabState живёт на главном акторе.
+@MainActor
+private struct TabWidths {
+    /// Комфортная ширина, пока вкладок мало. Прежний maxWidth: три вкладки не
+    /// должны растягиваться на всё окно.
+    static let comfortable: CGFloat = 200
+    /// Предел сжатия обычной вкладки: ровно иконка с отступами, название при
+    /// ней пропадает совсем.
+    static let minimum: CGFloat = 28
+    /// Закреплённая не растягивается и не сжимается — только значок.
+    static let pinned: CGFloat = 34
+    /// Активная не сжимается ниже: полоса из безымянных иконок не даёт понять,
+    /// где находишься, и у активной название нужно всегда — даже если она
+    /// закреплена.
+    static let activeMinimum: CGFloat = 90
+
+    private let regular: CGFloat
+    private let activeID: UUID
+
+    init(available: CGFloat, tabs: [TabState], activeID: UUID) {
+        self.activeID = activeID
+
+        // Кнопка «+» с отступом и поля полосы: без вычета последняя вкладка
+        // уходила бы под кнопку.
+        let reserved: CGFloat = 32 + 12
+        let free = max(0, available - reserved)
+
+        // Активная исключена из обеих групп: её ширина считается отдельно.
+        let pinnedCount = tabs.filter { $0.isPinned && $0.id != activeID }.count
+        let regularCount = tabs.count - pinnedCount - 1
+
+        guard regularCount > 0 else {
+            regular = Self.comfortable
+            return
+        }
+
+        // Активная в дележе не участвует и резервирует ровно свой минимум:
+        // вычти за неё comfortable — и при тесноте остальные ужимались бы ради
+        // ширины, которую она всё равно не получит.
+        let taken = CGFloat(pinnedCount) * Self.pinned + Self.activeMinimum
+        let rest = max(0, free - taken)
+        regular = min(Self.comfortable, max(Self.minimum, rest / CGFloat(regularCount)))
+    }
+
+    func width(for tab: TabState) -> CGFloat {
+        if tab.id == activeID {
+            // Активная закреплённая тоже показывает название: правило «видно,
+            // где я» важнее экономии места.
+            return tab.isPinned ? Self.activeMinimum : max(Self.activeMinimum, regular)
+        }
+        return tab.isPinned ? Self.pinned : regular
+    }
+
+    /// Влезает ли в такую ширину название. По этому же признаку прячется
+    /// крестик: на узкой вкладке он съел бы место у иконки.
+    func showsTitle(for tab: TabState) -> Bool {
+        width(for: tab) >= 60
     }
 }
 

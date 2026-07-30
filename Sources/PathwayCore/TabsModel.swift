@@ -16,9 +16,17 @@ public final class TabState: Identifiable {
     /// обходила бы каталог заново на каждое переключение.
     public internal(set) var hasLoaded = false
 
-    init(path: URL, showHiddenFiles: Bool, watcher: any DirectoryWatching) {
+    /// Вкладка закреплена: не закрывается и стоит в начале полосы.
+    ///
+    /// internal(set), как и hasLoaded: флаг вправе менять только TabsModel —
+    /// он следом чинит порядок и сохраняет сессию. Выставленный из вью, он
+    /// оставил бы закреплённую вкладку посреди обычных.
+    public internal(set) var isPinned = false
+
+    init(path: URL, showHiddenFiles: Bool, watcher: any DirectoryWatching, isPinned: Bool = false) {
         browser = BrowserModel(path: path, watcher: watcher)
         browser.showHiddenFiles = showHiddenFiles
+        self.isPinned = isPinned
     }
 
     /// Название для полосы вкладок. Вычисляемое, а не хранимое: путь меняется
@@ -82,8 +90,13 @@ public final class TabsModel {
         self.makeWatcher = makeWatcher
 
         let restored = store.restore()
-        let paths = restored.paths.isEmpty ? [path] : restored.paths
-        tabs = paths.map { TabState(path: $0, showHiddenFiles: false, watcher: makeWatcher()) }
+        let items = restored.items.isEmpty ? [TabRecord(path: path)] : restored.items
+        tabs = items.map {
+            TabState(path: $0.path, showHiddenFiles: false, watcher: makeWatcher(), isPinned: $0.isPinned)
+        }
+        // Порядок из хранилища мог разойтись с инвариантом: сессию мог записать
+        // билд без закрепления, а пользователь — поправить plist руками.
+        sortPinnedFirst()
         // Индекс мог указывать на вкладку, которая не уцелела.
         activeIndex = min(max(restored.activeIndex, 0), tabs.count - 1)
         tabs.forEach(watch)
@@ -100,7 +113,59 @@ public final class TabsModel {
 
     /// ⌘W гасится на единственной вкладке: у приложения одно окно, и закрывать
     /// его этой командой значило бы оставить пользователя с пустым Dock-значком.
-    public var canCloseActive: Bool { tabs.count > 1 }
+    /// На закреплённой — тоже: иначе защита от закрытия была бы неполной, а
+    /// частичной защите нельзя доверять, ради неё вкладку и закрепляли.
+    public var canCloseActive: Bool { canClose(id: active.id) }
+
+    /// Можно ли закрыть эту вкладку.
+    public func canClose(id: UUID) -> Bool {
+        guard tabs.count > 1, let tab = tabs.first(where: { $0.id == id }) else { return false }
+        return !tab.isPinned
+    }
+
+    // MARK: - Закрепление
+
+    /// Граница групп: индекс, на котором заканчиваются закреплённые вкладки.
+    private var pinnedCount: Int {
+        tabs.prefix { $0.isPinned }.count
+    }
+
+    /// Закрепляет вкладку и переносит её в конец закреплённой группы.
+    public func pin(id: UUID) {
+        setPinned(true, id: id)
+    }
+
+    /// Открепляет вкладку и переносит в начало обычной группы.
+    public func unpin(id: UUID) {
+        setPinned(false, id: id)
+    }
+
+    private func setPinned(_ pinned: Bool, id: UUID) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }), tabs[index].isPinned != pinned else { return }
+        let activeID = active.id
+        let tab = tabs.remove(at: index)
+        tab.isPinned = pinned
+        // И закрепление, и открепление кладут вкладку на границу групп: она же
+        // конец закреплённых и начало обычных. После удаления вкладки из списка
+        // граница уже посчитана без неё, поэтому вставка идёт ровно на неё.
+        tabs.insert(tab, at: pinnedCount)
+        // Активной остаётся та же вкладка, а не та же позиция.
+        activeIndex = tabs.firstIndex { $0.id == activeID } ?? activeIndex
+        save()
+    }
+
+    /// Приводит список к инварианту «закреплённые в начале», сохраняя порядок
+    /// внутри каждой группы.
+    private func sortPinnedFirst() {
+        let activeID = tabs.indices.contains(activeIndex) ? tabs[activeIndex].id : nil
+        // Стабильная разбивка вместо sort: сортировка по Bool в Swift порядок
+        // равных элементов не гарантирует, и вкладки внутри группы
+        // перемешивались бы на каждом запуске.
+        tabs = tabs.filter(\.isPinned) + tabs.filter { !$0.isPinned }
+        if let activeID, let index = tabs.firstIndex(where: { $0.id == activeID }) {
+            activeIndex = index
+        }
+    }
 
     // MARK: - Открытие
 
@@ -109,7 +174,10 @@ public final class TabsModel {
     public func open(_ url: URL, activate: Bool = true) {
         let tab = TabState(path: url, showHiddenFiles: showHiddenFiles, watcher: makeWatcher())
         watch(tab)
-        let index = activeIndex + 1
+        // Справа от активной, но не внутрь закреплённой группы: открытая из
+        // закреплённой вкладки, новая иначе встала бы между закреплёнными и
+        // порвала инвариант.
+        let index = max(activeIndex + 1, pinnedCount)
         tabs.insert(tab, at: index)
         if activate {
             activeIndex = index
@@ -126,7 +194,7 @@ public final class TabsModel {
     }
 
     public func close(id: UUID) {
-        guard tabs.count > 1, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        guard canClose(id: id), let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         // Загрузку снимаем явно: loadTask держит модель сильной ссылкой через
         // захват в замыкании, и незавершённое чтение сетевой папки продержало бы
         // закрытую вкладку в памяти до своего конца.
@@ -149,12 +217,16 @@ public final class TabsModel {
     }
 
     public func closeOthers(id: UUID) {
-        guard let kept = tabs.first(where: { $0.id == id }) else { return }
-        for tab in tabs where tab.id != id {
+        guard tabs.contains(where: { $0.id == id }) else { return }
+        // Закреплённые остаются: закрепление затем и нужно, чтобы групповое
+        // закрытие их не трогало.
+        let survives = { (tab: TabState) in tab.id == id || tab.isPinned }
+        for tab in tabs where !survives(tab) {
             tab.browser.cancelLoad()
         }
-        tabs = [kept]
-        activeIndex = 0
+        tabs = tabs.filter(survives)
+        sortPinnedFirst()
+        activeIndex = tabs.firstIndex { $0.id == id } ?? 0
         // Оставленная вкладка могла быть фоновой и папку ещё не читать.
         let wasLoaded = active.hasLoaded
         loadIfNeeded(active)
@@ -165,14 +237,23 @@ public final class TabsModel {
 
     public func closeToTheRight(of id: UUID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }), index < tabs.count - 1 else { return }
-        for tab in tabs[(index + 1)...] {
+        let activeID = active.id
+        // Закреплённые справа остаются. Существенно именно на закреплённой
+        // вкладке: правее неё лежат остальные закреплённые, и удаление
+        // диапазоном снесло бы ровно то, что закрепление защищает.
+        let doomed = tabs[(index + 1)...].filter { !$0.isPinned }
+        guard !doomed.isEmpty else { return }
+        let doomedIDs = Set(doomed.map(\.id))
+        for tab in doomed {
             tab.browser.cancelLoad()
         }
-        tabs.removeSubrange((index + 1)...)
+        tabs.removeAll { doomedIDs.contains($0.id) }
         // Активная могла оказаться среди закрытых — тогда ею становится
         // указанная вкладка, а она могла быть фоновой и папку не читать.
-        let wasActiveClosed = activeIndex > index
-        activeIndex = min(activeIndex, tabs.count - 1)
+        let wasActiveClosed = doomedIDs.contains(activeID)
+        activeIndex = wasActiveClosed
+            ? (tabs.firstIndex { $0.id == id } ?? tabs.count - 1)
+            : (tabs.firstIndex { $0.id == activeID } ?? 0)
         if wasActiveClosed {
             let wasLoaded = active.hasLoaded
             loadIfNeeded(active)
@@ -253,8 +334,15 @@ public final class TabsModel {
     public func move(from source: Int, to destination: Int) {
         guard tabs.indices.contains(source), tabs.indices.contains(destination), source != destination else { return }
         let active = tabs[activeIndex].id
+        // Перетаскивание не переносит вкладку через границу групп: закреплённая
+        // уехала бы в середину полосы, а после перезапуска перескочила обратно —
+        // порядок на экране разошёлся бы с сохранённым.
+        let pinned = pinnedCount
+        let allowed = tabs[source].isPinned ? 0..<pinned : pinned..<tabs.count
+        let target = min(max(destination, allowed.lowerBound), allowed.upperBound - 1)
+        guard target != source else { return }
         let tab = tabs.remove(at: source)
-        tabs.insert(tab, at: destination)
+        tabs.insert(tab, at: target)
         // Активной остаётся та же вкладка, а не та же позиция.
         activeIndex = tabs.firstIndex { $0.id == active } ?? activeIndex
         save()
@@ -265,6 +353,9 @@ public final class TabsModel {
     /// Вызывается вью при смене папки в любой вкладке: путь меняется мимо
     /// TabsModel, через сам BrowserModel, и заметить это отсюда нечем.
     public func save() {
-        store.save(paths: tabs.map(\.browser.pane.path), activeIndex: activeIndex)
+        store.save(
+            items: tabs.map { TabRecord(path: $0.browser.pane.path, isPinned: $0.isPinned) },
+            activeIndex: activeIndex
+        )
     }
 }

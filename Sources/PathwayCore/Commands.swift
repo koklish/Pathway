@@ -45,7 +45,7 @@ public enum CommandID: String, CaseIterable, Sendable {
     // Переход
     case goBack, goForward, goUp, editPath, findInFolder, searchContents, toggleFavorite
     // Вкладки
-    case newTab, closeTab, nextTab, previousTab, openInNewTab
+    case newTab, closeTab, pinTab, nextTab, previousTab, openInNewTab
 }
 
 /// Команда приложения: единственное описание действия, из которого строятся
@@ -369,6 +369,25 @@ public enum CommandRegistry {
             // пустым значком в Dock без очевидного способа вернуться.
             isEnabled: { !$0.isEditingText && $0.tabs.canCloseActive },
             run: { $0.tabs.closeActive() }
+        ),
+        AppCommand(
+            id: .pinTab,
+            // Заголовок для незакреплённой вкладки. Меню подставляет свой,
+            // когда вкладка закреплена, — как уже сделано у toggleFavorite:
+            // держать в реестре оба варианта значило бы дублировать команду
+            // ради одной строки.
+            title: "Закрепить вкладку",
+            // Без шортката: свободных сочетаний под вкладки не осталось, а ⌘P
+            // системное. Закрепляют вкладку редко, в отличие от переключения.
+            shortcut: nil,
+            icon: "pin",
+            // Не гаснет при вводе текста: закрепление ничего не разрушает, а
+            // шортката, который мог бы перехватить клавишу у поля, у него нет.
+            isEnabled: { _ in true },
+            run: { state in
+                let tab = state.tabs.active
+                tab.isPinned ? state.tabs.unpin(id: tab.id) : state.tabs.pin(id: tab.id)
+            }
         ),
         AppCommand(
             id: .nextTab,

@@ -30,6 +30,19 @@ struct TabsModelTests {
     private let usr = URL(fileURLWithPath: "/usr")
     private let library = URL(fileURLWithPath: "/Library")
 
+    /// Незакреплённые записи сессии — обычный случай для тестов восстановления.
+    private func records(_ paths: URL...) -> [TabRecord] {
+        paths.map { TabRecord(path: $0) }
+    }
+
+    /// Пишет сессию в формате версий до 1.2.8 — плоским массивом путей, без
+    /// признака закрепления. Только для проверки чтения старых сессий:
+    /// приложение так больше не сохраняет.
+    private func saveLegacy(_ paths: [URL], activeIndex: Int, to defaults: UserDefaults) {
+        defaults.set(paths.map(\.path), forKey: "tabs.paths")
+        defaults.set(activeIndex, forKey: "tabs.activeIndex")
+    }
+
     // MARK: - Открытие
 
     @Test("начинает с одной вкладки на заданной папке")
@@ -358,7 +371,7 @@ struct TabsModelTests {
     func dropsMissingPaths() {
         let defaults = makeDefaults()
         let store = TabsStore(defaults: defaults)
-        store.save(paths: [tmp, URL(fileURLWithPath: "/такой/папки/нет")], activeIndex: 0)
+        store.save(items: records(tmp, URL(fileURLWithPath: "/такой/папки/нет")), activeIndex: 0)
 
         let restored = makeModel(defaults: defaults)
 
@@ -370,7 +383,7 @@ struct TabsModelTests {
     func fallsBackToHome() {
         let defaults = makeDefaults()
         let store = TabsStore(defaults: defaults)
-        store.save(paths: [URL(fileURLWithPath: "/нет/такой")], activeIndex: 0)
+        store.save(items: records(URL(fileURLWithPath: "/нет/такой")), activeIndex: 0)
 
         let restored = makeModel(defaults: defaults)
 
@@ -383,7 +396,7 @@ struct TabsModelTests {
         let defaults = makeDefaults()
         let store = TabsStore(defaults: defaults)
         // Индекс указывает на вкладку, которая не уцелела.
-        store.save(paths: [tmp, usr, URL(fileURLWithPath: "/нет")], activeIndex: 2)
+        store.save(items: records(tmp, usr, URL(fileURLWithPath: "/нет")), activeIndex: 2)
 
         let restored = makeModel(defaults: defaults)
 
@@ -396,11 +409,232 @@ struct TabsModelTests {
         let defaults = makeDefaults()
         let store = TabsStore(defaults: defaults)
         // /usr/bin/env существует, но это файл — вкладкой он быть не может.
-        store.save(paths: [tmp, URL(fileURLWithPath: "/usr/bin/env")], activeIndex: 0)
+        store.save(items: records(tmp, URL(fileURLWithPath: "/usr/bin/env")), activeIndex: 0)
 
         let restored = makeModel(defaults: defaults)
 
         #expect(restored.tabs.count == 1)
+    }
+
+    // MARK: - Хранение сессии
+
+    @Test("закрепление переживает перезапуск, а не только пути")
+    func pinnedSurvivesRestart() {
+        let defaults = makeDefaults()
+        let model = makeModel(defaults: defaults)
+        model.open(tmp)
+        model.open(usr)
+        model.pin(id: model.tabs[2].id)
+
+        let restored = makeModel(defaults: defaults)
+
+        #expect(restored.tabs[0].isPinned)
+        #expect(restored.tabs[0].browser.pane.path.path == "/usr")
+    }
+
+    @Test("сессия старого формата читается, все вкладки незакреплённые")
+    func readsLegacySession() {
+        let defaults = makeDefaults()
+        // Формат версий до 1.2.8: массив путей без признака закрепления.
+        // Сессия коллеги, обновившегося с прошлой версии, обязана открыться
+        // целиком — иначе обновление теряет все вкладки разом.
+        saveLegacy([tmp, usr], activeIndex: 1, to: defaults)
+
+        let restored = makeModel(defaults: defaults)
+
+        #expect(restored.tabs.count == 2)
+        #expect(restored.tabs.allSatisfy { !$0.isPinned })
+        #expect(restored.active.browser.pane.path.path == "/usr")
+    }
+
+    @Test("сохранение в новом формате стирает старый ключ, а не оставляет оба")
+    func savingRemovesLegacyKey() {
+        let defaults = makeDefaults()
+        saveLegacy([tmp], activeIndex: 0, to: defaults)
+
+        let model = makeModel(defaults: defaults)
+        model.open(usr)
+
+        // Оставленный ключ пережил бы откат на прошлую версию и подсунул бы ей
+        // вкладки, которых у пользователя уже нет.
+        #expect(defaults.stringArray(forKey: "tabs.paths") == nil)
+    }
+
+    @Test("мёртвый путь закреплённой вкладки отбрасывается так же, как обычной")
+    func dropsMissingPinnedPath() {
+        let defaults = makeDefaults()
+        let store = TabsStore(defaults: defaults)
+        store.save(
+            items: [
+                TabRecord(path: URL(fileURLWithPath: "/нет/такой"), isPinned: true),
+                TabRecord(path: tmp),
+            ],
+            activeIndex: 1
+        )
+
+        let restored = makeModel(defaults: defaults)
+
+        #expect(restored.tabs.count == 1)
+        #expect(restored.active.browser.pane.path.path == "/tmp")
+    }
+
+    // MARK: - Закрепление
+
+    @Test("закреплённая вкладка встаёт в начало списка, а не остаётся на месте")
+    func pinMovesTabToFront() {
+        let model = makeModel()
+        model.open(tmp)
+        model.open(usr)
+        let pinned = model.active.id
+
+        model.pin(id: pinned)
+
+        #expect(model.tabs[0].id == pinned)
+        #expect(model.tabs[0].isPinned)
+    }
+
+    @Test("закрепление не меняет активную вкладку, хотя двигает её по списку")
+    func pinKeepsActiveTab() {
+        let model = makeModel()
+        model.open(tmp)
+        model.open(usr)
+        let active = model.active.id
+
+        model.pin(id: model.tabs[1].id)
+
+        #expect(model.active.id == active)
+    }
+
+    @Test("открепление возвращает вкладку в начало обычной группы, а не в конец списка")
+    func unpinMovesToStartOfRegulars() {
+        let model = makeModel()
+        model.open(tmp)
+        model.open(usr)
+        model.pin(id: model.tabs[0].id)
+        model.pin(id: model.tabs[1].id)
+        let unpinned = model.tabs[1].id
+
+        model.unpin(id: unpinned)
+
+        // После двух закреплённых: индекс 1 — начало обычной группы.
+        #expect(model.tabs[1].id == unpinned)
+        #expect(!model.tabs[1].isPinned)
+    }
+
+    @Test("повторное закрепление ничего не меняет")
+    func pinIsIdempotent() {
+        let model = makeModel()
+        model.open(tmp)
+        model.pin(id: model.active.id)
+        let order = model.tabs.map(\.id)
+
+        model.pin(id: model.tabs[0].id)
+
+        #expect(model.tabs.map(\.id) == order)
+    }
+
+    @Test("закреплённая вкладка не закрывается")
+    func pinnedTabDoesNotClose() {
+        let model = makeModel()
+        model.open(tmp)
+        let pinned = model.active.id
+        model.pin(id: pinned)
+
+        model.close(id: pinned)
+
+        #expect(model.tabs.contains { $0.id == pinned })
+        #expect(!model.canClose(id: pinned))
+    }
+
+    @Test("⌘W на закреплённой активной вкладке недоступна")
+    func canCloseActiveIsFalseWhenPinned() {
+        let model = makeModel()
+        model.open(tmp)
+        model.pin(id: model.active.id)
+
+        #expect(!model.canCloseActive)
+    }
+
+    @Test("«Закрыть другие» оставляет закреплённые, а не только указанную")
+    func closeOthersKeepsPinned() {
+        let model = makeModel()
+        model.open(tmp)
+        model.open(usr)
+        model.open(library)
+        model.pin(id: model.tabs[1].id)
+        let kept = model.tabs[3].id
+        let pinned = model.tabs[0].id
+
+        model.closeOthers(id: kept)
+
+        #expect(model.tabs.count == 2)
+        #expect(model.tabs.contains { $0.id == pinned })
+        #expect(model.active.id == kept)
+    }
+
+    @Test("«Закрыть вкладки справа» на закреплённой оставляет закреплённые справа")
+    func closeToTheRightKeepsPinned() {
+        let model = makeModel()
+        model.open(tmp)
+        model.open(usr)
+        // Закреплённая справа от обычной невозможна — группы этого не
+        // допускают. Единственный случай, где справа от вкладки есть
+        // закреплённые, — когда сама вкладка тоже закреплена, и именно ради
+        // него в closeToTheRight стоит исключение.
+        model.pin(id: model.tabs[1].id)
+        model.pin(id: model.tabs[2].id)
+        let anchor = model.tabs[0].id
+        let neighbour = model.tabs[1].id
+        let doomed = model.tabs[2].id
+
+        model.closeToTheRight(of: anchor)
+
+        #expect(model.tabs.contains { $0.id == neighbour }, "закреплённая справа должна уцелеть")
+        #expect(!model.tabs.contains { $0.id == doomed }, "обычная справа должна закрыться")
+        #expect(model.tabs.count == 2)
+    }
+
+    @Test("новая вкладка из закреплённой встаёт после всех закреплённых")
+    func openFromPinnedGoesAfterPinnedGroup() {
+        let model = makeModel()
+        model.open(tmp)
+        model.pin(id: model.tabs[0].id)
+        model.pin(id: model.tabs[1].id)
+        model.select(index: 0)
+
+        model.open(library)
+
+        // Обе закреплённые остались слева, новая встала сразу за ними.
+        #expect(model.tabs[0].isPinned)
+        #expect(model.tabs[1].isPinned)
+        #expect(model.tabs[2].browser.pane.path == library)
+    }
+
+    @Test("перетаскивание не уводит обычную вкладку левее закреплённых")
+    func moveKeepsRegularOutOfPinnedGroup() {
+        let model = makeModel()
+        model.open(tmp)
+        model.open(usr)
+        model.pin(id: model.tabs[0].id)
+        let regular = model.tabs[2].id
+
+        model.move(from: 2, to: 0)
+
+        #expect(model.tabs[0].isPinned)
+        #expect(model.tabs[1].id == regular)
+    }
+
+    @Test("перетаскивание не уводит закреплённую вкладку правее обычных")
+    func moveKeepsPinnedOutOfRegulars() {
+        let model = makeModel()
+        model.open(tmp)
+        model.open(usr)
+        model.pin(id: model.tabs[0].id)
+        let pinned = model.tabs[0].id
+
+        model.move(from: 0, to: 2)
+
+        #expect(model.tabs[0].id == pinned)
     }
 
     // MARK: - Слежение за папкой
