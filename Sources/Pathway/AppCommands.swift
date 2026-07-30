@@ -24,6 +24,7 @@ struct AppCommands: Commands {
             Divider()
             item(.open)
             item(.rename)
+            item(.batchRename)
             item(.properties)
             Divider()
             item(.compress)

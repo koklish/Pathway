@@ -29,6 +29,10 @@ public final class BrowserModel {
     /// Название идущей операции для статус-бара («Архивация…», «Распаковка…»).
     public private(set) var operationTitle: String?
     public private(set) var passwordRequest: PasswordRequest?
+    /// Выделение ждёт подтверждения безвозвратного удаления (сетевой том,
+    /// Корзины на нём нет). Обратный канал «Core просит UI»: вью показывает
+    /// алерт и зовёт deletePermanently() либо cancelPermanentDelete().
+    public var pendingPermanentDelete: [URL]?
 
     /// true, пока идёт чтение папки — для индикатора в интерфейсе.
     public private(set) var isLoading = false
@@ -518,6 +522,21 @@ public final class BrowserModel {
         run { _ = try operations.rename(url, to: newName) }
     }
 
+    /// Пакетное переименование из листа. Сводка с неудачами — в errorMessage,
+    /// а не в отдельный канал: лист к этому моменту уже закрыт, и тексту
+    /// больше некуда уйти.
+    public func applyBatchRename(_ steps: [RenameStep]) {
+        var summary: BatchRenameSummary?
+        run {
+            summary = BatchRenameExecutor().execute(steps)
+        }
+        guard let summary, !summary.failures.isEmpty else { return }
+        var text = "Переименовано \(summary.succeeded) из \(summary.total)."
+        text += "\nНе удалось: "
+        text += summary.failures.map { "«\($0.name)» — \($0.reason)" }.joined(separator: "; ")
+        errorMessage = text
+    }
+
     public func copy() {
         guard !pane.selection.isEmpty else { return }
         pasteboard.write(Array(pane.selection), operation: .copy)
@@ -590,10 +609,38 @@ public final class BrowserModel {
     public func moveSelectionToTrash() {
         let urls = Array(pane.selection)
         guard !urls.isEmpty else { return }
+        // На сетевых томах Корзины нет: trashItem падает с «volume doesn't
+        // have one». Как Finder, удаляем сразу и навсегда — но сначала
+        // спрашиваем подтверждение: назад дороги нет.
+        if let first = urls.first, !Self.isOnLocalVolume(first) {
+            pendingPermanentDelete = urls
+            return
+        }
         run {
             try operations.moveToTrash(urls)
             pane.selection = []
         }
+    }
+
+    /// Подтверждённое безвозвратное удаление — для сетевых томов без Корзины.
+    public func deletePermanently() {
+        guard let urls = pendingPermanentDelete else { return }
+        pendingPermanentDelete = nil
+        run {
+            try operations.deletePermanently(urls)
+            pane.selection = []
+        }
+    }
+
+    public func cancelPermanentDelete() {
+        pendingPermanentDelete = nil
+    }
+
+    /// Лежит ли объект на местном томе. Неопределённость считаем местной:
+    /// тогда пойдём через Корзину, и ошибка покажет настоящую причину,
+    /// а необратимого удаления по ложному срабатыванию не случится.
+    private static func isOnLocalVolume(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.volumeIsLocalKey]))?.volumeIsLocal ?? true
     }
 
     // MARK: - Архивы

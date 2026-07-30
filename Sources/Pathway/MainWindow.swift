@@ -181,6 +181,14 @@ struct MainWindow: View {
                     .modalTextEditing(appState)
             }
         }
+        .sheet(isPresented: Binding(
+            get: { appState.pendingBatchRename != nil }, set: { if !$0 { appState.pendingBatchRename = nil } }
+        )) {
+            if let items = appState.pendingBatchRename {
+                BatchRenameSheet(model: model, items: items) { appState.pendingBatchRename = nil }
+                    .modalTextEditing(appState)
+            }
+        }
         // Свойства: только чтение, поэтому без .modalTextEditing — редактируемых
         // полей нет, поднимать isEditingText незачем.
         .sheet(isPresented: Binding(
@@ -198,6 +206,17 @@ struct MainWindow: View {
                 ExtractPasswordView(model: model, request: request)
                     .modalTextEditing(appState)
             }
+        }
+        // Сетевой том без Корзины: удаление сразу и навсегда, с подтверждением.
+        .alert("Удалить безвозвратно?", isPresented: Binding(
+            get: { model.pendingPermanentDelete != nil },
+            set: { if !$0 { model.cancelPermanentDelete() } }
+        )) {
+            Button("Удалить", role: .destructive) { model.deletePermanently() }
+            Button("Отмена", role: .cancel) { model.cancelPermanentDelete() }
+        } message: {
+            let count = model.pendingPermanentDelete?.count ?? 0
+            Text("На сетевом томе нет Корзины: выделенные объекты (\(count) шт.) будут удалены сразу и навсегда, восстановить их будет нельзя.")
         }
         // Отдельного onChange для скрытых файлов больше нет: флаг живёт в
         // TabsModel и сам раздаётся всем вкладкам с перечитыванием — иначе

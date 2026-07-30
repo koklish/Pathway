@@ -175,6 +175,20 @@ struct FileOperationsTests {
         }
     }
 
+    @Test("deletePermanently удаляет безвозвратно, минуя Корзину")
+    func deletePermanentlyRemoves() throws {
+        try withTempDir { dir in
+            let file = dir.appendingPathComponent("насовсем.txt")
+            try Data("x".utf8).write(to: file)
+            let missing = dir.appendingPathComponent("призрак.txt")
+
+            let count = try FileOperations().deletePermanently([missing, file])
+
+            #expect(count == 1)
+            #expect(!FileManager.default.fileExists(atPath: file.path))
+        }
+    }
+
     @Test("пропускает исчезнувшие файлы, но обрабатывает остальные")
     func skipsMissingSources() throws {
         try withTempDir { dir in

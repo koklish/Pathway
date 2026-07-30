@@ -81,7 +81,12 @@ struct CommandsTests {
             state.browser.isReadOnlyVolume = true
             let enabledAfter = CommandID.allCases.filter { CommandRegistry[$0].isEnabled(state) }
 
-            #expect(Set(enabledBefore).subtracting(enabledAfter) == CommandRegistry.writesToDisk)
+            // batchRename в списке пишущих, но в этом сценарии не светится:
+            // выделен один файл, а ей нужно два — она гасла бы и без
+            // read-only, и в дифф не попадает. Её доступность проверяется
+            // отдельно в BatchRenameTests.
+            #expect(Set(enabledBefore).subtracting(enabledAfter)
+                    == CommandRegistry.writesToDisk.subtracting([.batchRename]))
         }
     }
 

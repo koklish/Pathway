@@ -53,6 +53,8 @@ public final class AppState {
     public var pendingRename: URL?
     /// Элементы для диалога архивации; nil — диалог закрыт.
     public var pendingCompress: [FileItem]?
+    /// Элементы для листа пакетного переименования; nil — лист закрыт.
+    public var pendingBatchRename: [FileItem]?
     /// Адресная строка должна перейти в режим ввода.
     public var pendingEditPath = false
     /// Поле поиска должно получить фокус.

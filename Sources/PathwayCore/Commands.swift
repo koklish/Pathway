@@ -37,7 +37,7 @@ public struct Shortcut: Sendable, Equatable {
 
 public enum CommandID: String, CaseIterable, Sendable {
     // Файл
-    case newFolder, open, rename, compress, extractHere, properties, revealInFinder, openTerminal, openClaude
+    case newFolder, open, rename, batchRename, compress, extractHere, properties, revealInFinder, openTerminal, openClaude
     // Правка
     case copy, cut, paste, copyPath, selectAll, moveToTrash
     // Вид
@@ -70,7 +70,7 @@ public enum CommandRegistry {
     /// вставке. «Архивировать» — потому что архив создаётся рядом с
     /// исходником, а не во временной папке.
     public static let writesToDisk: Set<CommandID> = [
-        .newFolder, .rename, .moveToTrash, .paste, .cut, .compress,
+        .newFolder, .rename, .batchRename, .moveToTrash, .paste, .cut, .compress,
     ]
 
     public static subscript(id: CommandID) -> AppCommand {
@@ -109,6 +109,19 @@ public enum CommandRegistry {
             // Переименование за раз только одного элемента: инлайн-редактор в списке один.
             isEnabled: { !$0.isEditingText && !$0.browser.isReadOnlyVolume && $0.browser.pane.selection.count == 1 },
             run: { $0.pendingRename = $0.browser.pane.selection.first }
+        ),
+        AppCommand(
+            id: .batchRename,
+            title: "Переименовать выбранные…",
+            // ⌃⌘R, а не ⇧⌘R: тот занят «Показать в Finder», и тест
+            // «шорткаты не конфликтуют» ловит такие дубли. Стандартного
+            // пункта «Правки» с ⌃⌘R нет, перехватывать у полей нечего.
+            shortcut: Shortcut(.character("r"), [.command, .control]),
+            icon: "textformat.abc",
+            // От двух элементов: для одного есть F2 — инлайн-редактор
+            // удобнее листа.
+            isEnabled: { !$0.isEditingText && !$0.browser.isReadOnlyVolume && $0.browser.pane.selection.count >= 2 },
+            run: { $0.pendingBatchRename = $0.browser.selectedItems }
         ),
         AppCommand(
             id: .compress,

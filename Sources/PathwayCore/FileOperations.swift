@@ -120,6 +120,20 @@ public struct FileOperations {
         return count
     }
 
+    /// Удаляет объекты безвозвратно, минуя Корзину. Возвращает количество удалённых.
+    ///
+    /// Для сетевых томов: Корзины на них нет, и trashItem падает с «volume
+    /// doesn't have one». Finder в этом случае тоже удаляет напрямую.
+    @discardableResult
+    public func deletePermanently(_ urls: [URL]) throws -> Int {
+        var count = 0
+        for url in urls where fm.fileExists(atPath: url.path) {
+            try fm.removeItem(at: url)
+            count += 1
+        }
+        return count
+    }
+
     // MARK: - Вспомогательное
 
     /// Подбирает свободное имя: «Новая папка», «Новая папка 2», «file 2.txt» и так далее.

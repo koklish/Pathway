@@ -601,6 +601,11 @@ struct FileListView: NSViewRepresentable {
 
             if item != nil {
                 add(to: menu, .rename, #selector(menuRename))
+                // Пакетное — только при мультиселекции: для одного файла выше
+                // есть обычное «Переименовать».
+                if clickedTargets.count >= 2 {
+                    add(to: menu, .batchRename, #selector(menuBatchRename))
+                }
             }
             addCreateSubmenu(to: menu)
             menu.addItem(.separator())
@@ -759,6 +764,14 @@ struct FileListView: NSViewRepresentable {
             let targets = clickedTargets
             guard !targets.isEmpty else { return }
             onCompress(targets)
+        }
+
+        // От clickedTargets, как «Свойства» и «Архивировать»: правый клик по
+        // мультиселекции действует на неё, а не на выделение панели.
+        @objc private func menuBatchRename() {
+            let targets = clickedTargets
+            guard targets.count >= 2 else { return }
+            appState.pendingBatchRename = targets
         }
 
         // Свойства от clickedTargets, а не от выделения: правый клик по

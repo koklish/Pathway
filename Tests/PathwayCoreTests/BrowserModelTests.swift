@@ -188,6 +188,45 @@ struct BrowserModelTests {
 
             #expect(model.items.isEmpty)
             #expect(model.pane.selection.isEmpty)
+            #expect(model.pendingPermanentDelete == nil)
+        }
+    }
+
+    @Test("deletePermanently исполняет подтверждённое удаление")
+    func deletePermanentlyRemovesItem() throws {
+        try withTempDir { dir in
+            let file = dir.appendingPathComponent("насовсем.txt")
+            try Data("x".utf8).write(to: file)
+            let model = BrowserModel(path: dir)
+            model.reload()
+            model.pane.selection = [file]
+            // Сетевой том в тестах не поднять, поэтому состояние запроса
+            // выставляем напрямую — как это сделало бы moveSelectionToTrash.
+            model.pendingPermanentDelete = [file]
+
+            model.deletePermanently()
+
+            #expect(model.items.isEmpty)
+            #expect(model.pane.selection.isEmpty)
+            #expect(model.pendingPermanentDelete == nil)
+            #expect(!FileManager.default.fileExists(atPath: file.path))
+        }
+    }
+
+    @Test("cancelPermanentDelete оставляет файл на месте")
+    func cancelPermanentDeleteKeepsItem() throws {
+        try withTempDir { dir in
+            let file = dir.appendingPathComponent("оставить.txt")
+            try Data("x".utf8).write(to: file)
+            let model = BrowserModel(path: dir)
+            model.reload()
+            model.pane.selection = [file]
+            model.pendingPermanentDelete = [file]
+
+            model.cancelPermanentDelete()
+
+            #expect(model.pendingPermanentDelete == nil)
+            #expect(FileManager.default.fileExists(atPath: file.path))
         }
     }
 
