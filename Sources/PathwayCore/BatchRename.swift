@@ -79,11 +79,16 @@ public enum BatchRenamePlan {
         guard !rule.isEmpty else { return [] }
 
         let fm = FileManager.default
+        let matched = matching(items, rule: rule)
         // Адреса источников в нижнем регистре: файловая система обычно
         // регистронезависима, и «A.txt» с «a.txt» на диске не уживутся.
-        let sources = Set(items.map { $0.url.path.lowercased() })
+        //
+        // Собираются по отфильтрованным, а не по всем поданным: отсеянный
+        // фильтром файл никуда не уедет, его имя занято по-настоящему, и цель,
+        // совпавшая с ним, обязана стать конфликтом.
+        let sources = Set(matched.map { $0.url.path.lowercased() })
 
-        var steps = items.enumerated().map { index, item in
+        var steps = matched.enumerated().map { index, item in
             let name = transformedName(for: item, rule: rule, index: index)
             return RenameStep(item: item, newName: name, status: status(of: name))
         }
@@ -126,6 +131,25 @@ public enum BatchRenamePlan {
         return steps
     }
 
+    /// «Найти» отбирает набор, а не только задаёт подстроку для замены: не
+    /// совпавший объект в план не попадает вовсе. Иначе он оставался бы в
+    /// превью с прежним именем, считался в «Будет переименовано» и занимал
+    /// номер при нумерации, хотя человек его не выбирал правилом.
+    ///
+    /// Сравнение — по имени без расширения, по тому же тексту, к которому
+    /// применяется замена: отбор по полному имени пропустил бы «Найти: jpg»,
+    /// где менять в базе нечего, и строка попала бы в план не изменившись.
+    ///
+    /// Пустое «Найти» не фильтрует ничего — правило «префикс ко всем
+    /// выделенным» обязано работать без отбора.
+    private static func matching(_ items: [FileItem], rule: BatchRenameRule) -> [FileItem] {
+        guard !rule.find.isEmpty else { return items }
+        return items.filter {
+            $0.url.deletingPathExtension().lastPathComponent
+                .range(of: rule.find, options: rule.caseSensitive ? [] : .caseInsensitive) != nil
+        }
+    }
+
     /// Все правила применяются к имени без расширения, расширение
     /// сохраняется всегда: «замена IMG → Отпуск» не должна превращать
     /// «IMG_4021.jpg» в файл без типа.
@@ -133,6 +157,10 @@ public enum BatchRenamePlan {
     /// Порядок фиксирован — замена → регистр → префикс/суффикс → нумерация:
     /// нумерация обязана видеть финальное имя, иначе «Отпуск 01» при
     /// суффиксе, применённом после номера, превратился бы в «01 Отпуск».
+    ///
+    /// index — позиция в отфильтрованном наборе, а не в поданном: считай по
+    /// поданному, и в превью появились бы пропуски номеров на месте
+    /// отсеянных фильтром объектов, которых человек не задавал.
     private static func transformedName(for item: FileItem, rule: BatchRenameRule, index: Int) -> String {
         var base = item.url.deletingPathExtension().lastPathComponent
         if !rule.find.isEmpty {

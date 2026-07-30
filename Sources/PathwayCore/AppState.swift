@@ -61,6 +61,12 @@ public final class AppState {
     public var pendingSearch = false
     /// Субъект для диалога свойств; nil — диалог закрыт.
     public var pendingProperties: PropertiesSubject?
+    /// Панель быстрого просмотра должна открыться.
+    ///
+    /// Флаг, а не список URL: панель забирает файлы из выделения сама в момент
+    /// показа. Список пришлось бы поддерживать в актуальном состоянии при
+    /// каждой смене выделения — панель следует за ним, пока открыта.
+    public var pendingQuickLook = false
 
     public init(
         path: URL = FileManager.default.homeDirectoryForCurrentUser,

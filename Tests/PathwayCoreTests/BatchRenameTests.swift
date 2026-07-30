@@ -44,7 +44,114 @@ struct BatchRenameTests {
 
             let steps = BatchRenamePlan.build(items: items, rule: rule)
 
-            #expect(steps.map(\.newName) == ["Фото_1.txt", "img_2.txt"])
+            // «img_2» не совпал с учётом регистра — он выпал из плана целиком,
+            // а не остался в нём с прежним именем.
+            #expect(steps.map(\.newName) == ["Фото_1.txt"])
+        }
+    }
+
+    // MARK: - «Найти» как фильтр набора
+
+    @Test("«Найти» отбирает набор: не совпавшие в план не попадают")
+    func findFiltersOutNonMatchingItems() throws {
+        try withTempDir { dir in
+            let items = [item(try makeFile(dir, "3Новая")), item(try makeFile(dir, "5пывпыва"))]
+            var rule = BatchRenameRule()
+            rule.find = "Новая"
+
+            let steps = BatchRenamePlan.build(items: items, rule: rule)
+
+            // Не «остался с прежним именем», а отсутствует: иначе он попал бы в
+            // счётчик «Будет переименовано» и занял номер при нумерации.
+            #expect(steps.count == 1)
+            #expect(steps[0].item.name == "3Новая")
+        }
+    }
+
+    @Test("отбор регистронезависим по умолчанию и учитывает регистр по флагу")
+    func filterFollowsCaseSensitivityFlag() throws {
+        try withTempDir { dir in
+            let items = [item(try makeFile(dir, "3Новая"))]
+            var rule = BatchRenameRule()
+            rule.find = "новая"
+            rule.prefix = "x-"
+
+            #expect(BatchRenamePlan.build(items: items, rule: rule).count == 1)
+
+            rule.caseSensitive = true
+            #expect(BatchRenamePlan.build(items: items, rule: rule).isEmpty)
+        }
+    }
+
+    @Test("пустое «Найти» не фильтрует ничего")
+    func emptyFindKeepsEveryItem() throws {
+        try withTempDir { dir in
+            let items = [item(try makeFile(dir, "a.txt")), item(try makeFile(dir, "b.txt"))]
+            var rule = BatchRenameRule()
+            rule.prefix = "x-"
+
+            let steps = BatchRenamePlan.build(items: items, rule: rule)
+
+            // Правило «префикс ко всем выделенным» обязано работать без отбора.
+            #expect(steps.count == 2)
+        }
+    }
+
+    @Test("отбор идёт по имени без расширения, а не по полному имени")
+    func filterMatchesBaseNameOnly() throws {
+        try withTempDir { dir in
+            let items = [item(try makeFile(dir, "a.jpg"))]
+            var rule = BatchRenameRule()
+            rule.find = "jpg"
+            rule.replace = "png"
+
+            let steps = BatchRenamePlan.build(items: items, rule: rule)
+
+            // Замена работает по базе: отбери по полному имени — и файл попал бы
+            // в план, ничего в нём не изменив.
+            #expect(steps.isEmpty)
+        }
+    }
+
+    @Test("нумерация считается по отфильтрованному набору, а не по исходному")
+    func numberingIgnoresFilteredOutItems() throws {
+        try withTempDir { dir in
+            let items = [
+                item(try makeFile(dir, "x1.txt")),
+                item(try makeFile(dir, "нет.txt")),
+                item(try makeFile(dir, "x2.txt")),
+            ]
+            var rule = BatchRenameRule()
+            rule.find = "x"
+            // Замена «x» на «x» — чтобы тест смотрел на номер, а не на удаление
+            // найденного пустым «Заменить на».
+            rule.replace = "x"
+            rule.numbering = .suffix
+
+            let steps = BatchRenamePlan.build(items: items, rule: rule)
+
+            // «x22», а не «x23»: пропуск номера на отсеянном человек не задавал.
+            #expect(steps.map(\.newName) == ["x11.txt", "x22.txt"])
+        }
+    }
+
+    @Test("цель, совпавшая с именем отсеянного файла, — конфликт")
+    func targetCollidingWithFilteredOutItemConflicts() throws {
+        try withTempDir { dir in
+            // «c.txt» подан, но фильтром отсеян — значит остаётся на месте, и его
+            // имя занято по-настоящему.
+            let items = [item(try makeFile(dir, "a.txt")), item(try makeFile(dir, "c.txt"))]
+            var rule = BatchRenameRule()
+            rule.find = "a"
+            rule.replace = "c"
+
+            let steps = BatchRenamePlan.build(items: items, rule: rule)
+
+            #expect(steps.count == 1)
+            guard case .conflict = steps[0].status else {
+                Issue.record("ожидался конфликт «имя занято», получен \(steps[0].status)")
+                return
+            }
         }
     }
 

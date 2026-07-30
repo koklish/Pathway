@@ -24,12 +24,22 @@ struct BatchRenameSheet: View {
         steps.count { $0.status == .ok }
     }
 
+    /// Отсеянные фильтром «Найти» названы числом: без этого исчезновение строк
+    /// из превью выглядело бы как потеря выделения.
+    private var subtitle: String {
+        let base = "Объектов: \(items.count)"
+        guard !rule.find.isEmpty, steps.count < items.count else {
+            return base + " — расширения сохраняются"
+        }
+        return base + ", подходит: \(steps.count) — расширения сохраняются"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Переименовать выбранные")
                     .font(.system(size: 20, weight: .bold))
-                Text("Объектов: \(items.count) — расширения сохраняются")
+                Text(subtitle)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
@@ -58,6 +68,9 @@ struct BatchRenameSheet: View {
                 fieldLabel("Найти")
                 TextField("", text: $rule.find)
                     .textFieldStyle(.roundedBorder)
+                    // Пустое «Заменить на» как удаление найденного — нормальный
+                    // сценарий, и объяснить его надо там, где человек смотрит.
+                    .help("Отбирает объекты, содержащие этот текст. Пустое «Заменить на» удаляет найденное")
                 fieldLabel("Заменить на")
                 TextField("", text: $rule.replace)
                     .textFieldStyle(.roundedBorder)

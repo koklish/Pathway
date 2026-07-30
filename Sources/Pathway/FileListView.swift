@@ -1,5 +1,6 @@
 import AppKit
 import PathwayCore
+import QuickLookUI
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -23,6 +24,39 @@ final class FileTableView: NSTableView {
     var canPaste: (() -> Bool)?
     /// Средний клик по строке — открыть папку фоновой вкладкой.
     var onMiddleClick: ((Int) -> Void)?
+    /// Файлы для быстрого просмотра — текущее выделение.
+    ///
+    /// Замыкание, а не сохранённый массив: список должен читаться в момент
+    /// показа. Панель следует за выделением, пока открыта, и слепок,
+    /// сделанный при первом нажатии, к следующей стрелке уже устарел бы.
+    var previewItems: (() -> [URL])?
+
+    /// Пробел открывает и закрывает панель быстрого просмотра, как в Finder.
+    ///
+    /// Клавиша обрабатывается здесь, а не шорткатом пункта меню: keyEquivalent
+    /// перехватывал бы пробел глобально, и его нельзя было бы набрать в имени
+    /// файла, адресной строке и поиске. Пока фокус в списке — пробел наш,
+    /// как только уходит в текстовое поле — его.
+    override func keyDown(with event: NSEvent) {
+        guard event.charactersIgnoringModifiers == " ", event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty else {
+            super.keyDown(with: event)
+            return
+        }
+        toggleQuickLook()
+    }
+
+    /// Показывает панель или закрывает уже открытую.
+    ///
+    /// Открывать на пустом выделении нечего: панель показала бы пустоту с
+    /// надписью, что файл не выбран.
+    func toggleQuickLook() {
+        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
+            QLPreviewPanel.shared().orderOut(nil)
+            return
+        }
+        guard previewItems?().isEmpty == false else { return }
+        QLPreviewPanel.shared().makeKeyAndOrderFront(nil)
+    }
 
     /// Средний клик обрабатывает сама таблица, а не делегат: otherMouseUp до
     /// него не дойдёт — делегата нет в responder chain. Действие вешаем на
@@ -57,6 +91,98 @@ final class FileTableView: NSTableView {
         default:
             return super.validateUserInterfaceItem(item)
         }
+    }
+}
+
+// MARK: - Быстрый просмотр
+//
+// Панель ищет себе управляющего по responder chain: спрашивает у первого
+// респондера acceptsPreviewPanelControl и ему же отдаёт себя. Первый
+// респондер — таблица, поэтому и датасорс, и делегат живут здесь, а не в
+// координаторе: его в responder chain нет, до него запрос не дошёл бы.
+//
+// QLPreviewPanelController в списке конформансов не значится: это неформальный
+// протокол из категории NSObject, отдельного типа в Swift у него нет — панель
+// проверяет наличие самих методов. Поэтому три метода ниже переопределяют
+// заглушки NSResponder.
+//
+// @preconcurrency на конформансах обязателен: в SDK эти протоколы не
+// изолированы, а FileTableView как наследник NSView живёт на главном акторе —
+// Swift 6 считает такой конформанс гонкой. Панель зовёт их только с главного
+// потока, поэтому изоляция здесь фактическая, а не заявленная в заголовке.
+@MainActor
+extension FileTableView: @preconcurrency QLPreviewPanelDataSource, @preconcurrency QLPreviewPanelDelegate {
+    override nonisolated func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
+
+    // nonisolated обязателен: это override заглушек NSResponder, а они в SDK
+    // не изолированы — ужесточить изоляцию в наследнике Swift не даёт.
+    // Тело всё же трогает главноакторные свойства панели, поэтому изоляция
+    // подтверждается через assumeIsolated: вызывает эти методы сама панель, и
+    // только с главного потока.
+    override nonisolated func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated {
+            panel.dataSource = self
+            panel.delegate = self
+        }
+    }
+
+    override nonisolated func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated {
+            panel.dataSource = nil
+            panel.delegate = nil
+        }
+    }
+
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        previewItems?().count ?? 0
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
+        let urls = previewItems?() ?? []
+        // Индекс приходит от панели, а выделение могло смениться между её
+        // запросом и нашим чтением: панель перерисовывается асинхронно.
+        guard index >= 0, index < urls.count else { return nil }
+        return urls[index] as NSURL
+    }
+
+    /// Отдаёт панели клавиши, которые должны достаться списку.
+    ///
+    /// Пока панель открыта, она забирает ввод себе целиком. Без этого пробел
+    /// её не закрывал бы (открыть — открывает, а обратно только Esc), а
+    /// стрелки листали бы предпросмотр, не двигая выделение в списке.
+    func previewPanel(_ panel: QLPreviewPanel!, handle event: NSEvent!) -> Bool {
+        guard event.type == .keyDown, event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty
+        else { return false }
+
+        if event.charactersIgnoringModifiers == " " {
+            panel.orderOut(nil)
+            return true
+        }
+        // Только вертикальные стрелки: выделение едет по списку, а панель
+        // перерисовывается вслед за ним — так листают папку картинок.
+        //
+        // Перехватывать всё подряд нельзя: Esc должен закрывать панель, ⌘W —
+        // окно, а ←/→ листают страницы внутри самого предпросмотра. Забрав их
+        // себе, мы бы их погасили — таблице они не нужны.
+        let vertical: Set<UInt16> = [125, 126] // стрелки вниз и вверх
+        guard vertical.contains(event.keyCode) else { return false }
+        keyDown(with: event)
+        return true
+    }
+
+    /// Зумирует открытие и закрытие панели от строки таблицы, как в Finder.
+    func previewPanel(_ panel: QLPreviewPanel!, sourceFrameOnScreenFor item: (any QLPreviewItem)!) -> NSRect {
+        guard let url = (item as? NSURL) as URL?,
+              let index = previewItems?().firstIndex(of: url),
+              let window
+        else { return .zero }
+        // Строка выделения в списке, а не в панели: индексы совпадают только
+        // при выделении подряд, а зумить надо от того, что видно на экране.
+        let row = selectedRowIndexes.sorted()
+        guard index < row.count else { return .zero }
+        let rect = rect(ofRow: row[index])
+        guard !rect.isEmpty else { return .zero }
+        return window.convertToScreen(convert(rect, to: nil))
     }
 }
 
@@ -107,6 +233,11 @@ struct FileListView: NSViewRepresentable {
         table.onMiddleClick = { [coordinator = context.coordinator] row in
             coordinator.openInBackgroundTab(row: row)
         }
+        // Через координатор: model в замыкании застыла бы на первом рендере и
+        // после смены вкладки показывала бы файлы прошлой.
+        table.previewItems = { [coordinator = context.coordinator] in
+            coordinator.model.selectedItems.map(\.url)
+        }
 
         for column in Column.allCases {
             let tableColumn = NSTableColumn(identifier: column.identifier)
@@ -137,6 +268,11 @@ struct FileListView: NSViewRepresentable {
         // таблице, а выделение к этому моменту стоит.
         context.coordinator.revealIfNeeded()
         context.coordinator.beginRenamingIfNeeded()
+        context.coordinator.showQuickLookIfNeeded()
+        // Выделение могла сменить и сама модель — переходом к созданному файлу
+        // или сменой вкладки. Открытая панель обязана показать то, что выделено
+        // сейчас: tableViewSelectionDidChange на такие правки не приходит.
+        context.coordinator.refreshQuickLook()
     }
 
     enum Column: String, CaseIterable {
@@ -219,7 +355,10 @@ struct FileListView: NSViewRepresentable {
         var model: BrowserModel
         var actions: FolderActions
         var appState: AppState
-        weak var table: NSTableView?
+        // Конкретный тип, а не NSTableView: координатору нужны buffer-команды и
+        // быстрый просмотр, объявленные в подклассе. Создаётся она только в
+        // makeNSView, поэтому другого типа тут и не бывает.
+        weak var table: FileTableView?
         @Binding var renamingItem: URL?
         let onCompress: ([FileItem]) -> Void
         private var isSyncingSelection = false
@@ -301,6 +440,17 @@ struct FileListView: NSViewRepresentable {
             model.pane.selection = Set(table.selectedRowIndexes.compactMap { row in
                 row < model.items.count ? model.items[row].url : nil
             })
+            refreshQuickLook()
+        }
+
+        /// Показывает в открытой панели то, что выделено сейчас.
+        ///
+        /// Проверка sharedPreviewPanelExists обязательна: обращение к shared()
+        /// создаёт панель, и без неё каждая смена выделения поднимала бы её из
+        /// небытия, хотя пользователь просмотр не открывал.
+        func refreshQuickLook() {
+            guard QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible else { return }
+            QLPreviewPanel.shared().reloadData()
         }
 
         func syncSelection() {
@@ -356,6 +506,20 @@ struct FileListView: NSViewRepresentable {
             model.revealRequest = nil
             guard let row = model.items.firstIndex(where: { $0.url == target }) else { return }
             table.scrollRowToVisible(row)
+        }
+
+        /// Открывает панель по команде меню.
+        ///
+        /// Панель берёт ввод себе, поэтому фокус сначала возвращаем списку:
+        /// иначе после клика по пункту меню первым респондером осталась бы
+        /// таблица без фокуса, и панели некому было бы отдать себя в
+        /// beginPreviewPanelControl.
+        func showQuickLookIfNeeded() {
+            guard appState.pendingQuickLook else { return }
+            appState.pendingQuickLook = false
+            guard let table else { return }
+            table.window?.makeFirstResponder(table)
+            table.toggleQuickLook()
         }
 
         func beginRenamingIfNeeded() {
@@ -641,6 +805,7 @@ struct FileListView: NSViewRepresentable {
 
             if item != nil {
                 menu.addItem(.separator())
+                add(to: menu, .quickLook, #selector(menuQuickLook))
                 add(to: menu, .properties, #selector(menuProperties))
                 add(to: menu, .moveToTrash, #selector(menuMoveToTrash))
             }
@@ -776,6 +941,21 @@ struct FileListView: NSViewRepresentable {
 
         // Свойства от clickedTargets, а не от выделения: правый клик по
         // невыделенному файлу действует на него — как остальные пункты меню.
+        /// Открывает быстрый просмотр для кликнутых объектов.
+        ///
+        /// Панель читает выделение, а правый клик по невыделенному файлу
+        /// действует на него — поэтому выделение сначала приводим к тому, на
+        /// чём меню вызвали. Иначе пункт показал бы не тот файл, по которому
+        /// кликнули.
+        @objc private func menuQuickLook() {
+            let targets = clickedTargets
+            guard !targets.isEmpty, let table else { return }
+            model.pane.selection = Set(targets.map(\.url))
+            syncSelection()
+            table.window?.makeFirstResponder(table)
+            table.toggleQuickLook()
+        }
+
         @objc private func menuProperties() {
             let targets = clickedTargets
             guard !targets.isEmpty else { return }

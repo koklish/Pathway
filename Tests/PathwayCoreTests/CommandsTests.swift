@@ -58,7 +58,7 @@ struct CommandsTests {
             state.browser.isReadOnlyVolume = true
 
             // Копирование с тома — это чтение, и ровно в нём смысл сценария.
-            for id in [CommandID.copy, .open, .revealInFinder, .selectAll] {
+            for id in [CommandID.copy, .open, .revealInFinder, .selectAll, .quickLook] {
                 #expect(CommandRegistry[id].isEnabled(state), "\(id) должна остаться доступной")
             }
         }
@@ -142,7 +142,7 @@ struct CommandsTests {
             let state = makeState(path: dir)
             state.browser.reload()
 
-            for id in [CommandID.copy, .cut, .moveToTrash, .rename, .open, .compress] {
+            for id in [CommandID.copy, .cut, .moveToTrash, .rename, .open, .compress, .quickLook] {
                 #expect(!CommandRegistry[id].isEnabled(state), "\(id.rawValue) должна быть недоступна")
             }
             for id in [CommandID.newFolder, .refresh, .toggleHiddenFiles, .revealInFinder] {
@@ -161,7 +161,7 @@ struct CommandsTests {
 
             state.browser.pane.selection = [state.browser.items[0].url]
 
-            for id in [CommandID.copy, .cut, .moveToTrash, .rename, .open] {
+            for id in [CommandID.copy, .cut, .moveToTrash, .rename, .open, .quickLook] {
                 #expect(CommandRegistry[id].isEnabled(state), "\(id.rawValue) должна быть доступна")
             }
         }
@@ -279,6 +279,47 @@ struct CommandsTests {
                 #expect(!CommandRegistry[id].title.isEmpty)
             }
             #expect(CommandRegistry[.copy].isEnabled(state))
+        }
+    }
+
+    @Test("быстрый просмотр не имеет шортката в реестре, а не Пробел")
+    func quickLookHasNoShortcutInRegistry() {
+        // Клавиша у команды есть — Пробел, — но обрабатывает её сама таблица
+        // списка. Попади он сюда как keyEquivalent пункта меню, AppKit
+        // перехватывал бы его глобально, и пробел перестал бы набираться в
+        // именах файлов, адресной строке и поиске.
+        #expect(CommandRegistry[.quickLook].shortcut == nil)
+    }
+
+    @Test("быстрый просмотр просит интерфейс открыть панель, а не открывает файл")
+    func quickLookAsksInterfaceForPanel() throws {
+        try withTempDir { dir in
+            let file = dir.appendingPathComponent("file.txt")
+            try Data("x".utf8).write(to: file)
+            let state = makeState(path: dir)
+            state.browser.reload()
+            state.browser.pane.selection = [state.browser.items[0].url]
+
+            CommandRegistry[.quickLook].run(state)
+
+            #expect(state.pendingQuickLook)
+        }
+    }
+
+    @Test("во время ввода текста быстрый просмотр гасится")
+    func quickLookDisabledWhileEditingText() throws {
+        try withTempDir { dir in
+            let file = dir.appendingPathComponent("file.txt")
+            try Data("x".utf8).write(to: file)
+            let state = makeState(path: dir)
+            state.browser.reload()
+            state.browser.pane.selection = [state.browser.items[0].url]
+
+            state.isEditingText = true
+
+            // Пробел при вводе набирает символ, а не открывает панель. Клавишу
+            // гасит фокус, но пункт меню остался бы кликабельным.
+            #expect(!CommandRegistry[.quickLook].isEnabled(state))
         }
     }
 

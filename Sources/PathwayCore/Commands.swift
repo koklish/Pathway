@@ -37,7 +37,7 @@ public struct Shortcut: Sendable, Equatable {
 
 public enum CommandID: String, CaseIterable, Sendable {
     // Файл
-    case newFolder, open, rename, batchRename, compress, extractHere, properties, revealInFinder, openTerminal, openClaude
+    case newFolder, open, rename, batchRename, compress, extractHere, properties, quickLook, revealInFinder, openTerminal, openClaude
     // Правка
     case copy, cut, paste, copyPath, selectAll, moveToTrash
     // Вид
@@ -154,6 +154,21 @@ public enum CommandRegistry {
             // чтения. Гаснет при вводе текста и на пустом выделении.
             isEnabled: { !$0.isEditingText && !$0.browser.selectedItems.isEmpty },
             run: { $0.pendingProperties = PropertiesBuilder.subject(for: $0.browser.selectedItems) }
+        ),
+        AppCommand(
+            id: .quickLook,
+            title: "Быстрый просмотр",
+            // Без шортката намеренно, хотя клавиша есть — Пробел. Став
+            // keyEquivalent пункта меню, он перехватывался бы глобально, и
+            // пробел перестал бы набираться в именах файлов, адресной строке
+            // и поиске. Клавишу обрабатывает сама FileTableView в keyDown,
+            // пока фокус в списке; меню даёт только обнаружимость. Та же
+            // причина, по которой буферные команды лежат здесь без клавиш.
+            shortcut: nil,
+            icon: "eye",
+            // Только чтение: доступна и на томе только для чтения.
+            isEnabled: { !$0.isEditingText && !$0.browser.selectedItems.isEmpty },
+            run: { $0.pendingQuickLook = true }
         ),
         AppCommand(
             id: .revealInFinder,
