@@ -22,30 +22,51 @@ struct TabBarView: View {
                 tabs: tabs.tabs,
                 activeID: tabs.active.id
             )
-            ScrollView(.horizontal, showsIndicators: false) {
-                // Вкладки прижаты к нижнему краю полосы: активная должна упираться
-                // в адресную строку без зазора, иначе закладка отрывается от
-                // содержимого и читается как висящая кнопка.
-                HStack(alignment: .bottom, spacing: 0) {
-                    ForEach(tabs.tabs) { tab in
-                        tabItem(tab, width: layout.width(for: tab))
-                            .onDrag {
-                                dragging = tab.id
-                                // Перетаскивание внутри полосы: содержимое провайдера
-                                // не используется, порядок меняет onDrop по dragging.
-                                return NSItemProvider(object: tab.id.uuidString as NSString)
-                            }
-                            .onDrop(
-                                of: [.text],
-                                delegate: TabDropDelegate(target: tab.id, tabs: tabs, dragging: $dragging)
-                            )
+            // Вкладки упёрлись в минимальную ширину и больше не помещаются:
+            // полоса прокручивается, и кнопка «+» встаёт особняком у правого
+            // края — уехав вместе с вкладками, она пропала бы из виду.
+            let overflows = layout.totalWidth(tabs: tabs.tabs) > layout.tabsWidth
+
+            HStack(alignment: .bottom, spacing: 0) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    // Вкладки прижаты к нижнему краю полосы: активная должна упираться
+                    // в адресную строку без зазора, иначе закладка отрывается от
+                    // содержимого и читается как висящая кнопка.
+                    HStack(alignment: .bottom, spacing: 0) {
+                        ForEach(tabs.tabs) { tab in
+                            tabItem(tab, width: layout.width(for: tab))
+                                .onDrag {
+                                    dragging = tab.id
+                                    // Перетаскивание внутри полосы: содержимое провайдера
+                                    // не используется, порядок меняет onDrop по dragging.
+                                    return NSItemProvider(object: tab.id.uuidString as NSString)
+                                }
+                                .onDrop(
+                                    of: [.text],
+                                    delegate: TabDropDelegate(target: tab.id, tabs: tabs, dragging: $dragging)
+                                )
+                        }
+                        // Пока вкладки помещаются, кнопка едет сразу за последней:
+                        // прижатая к краю окна, она отрывается от полосы и читается
+                        // как кнопка тулбара, а не как «ещё одна вкладка».
+                        if !overflows {
+                            newTabButton
+                                .padding(.leading, 6)
+                                .padding(.bottom, 4)
+                        }
                     }
+                    .padding(.leading, 6)
+                }
+                // Без распорки ScrollView сжимается по содержимому, и при
+                // переполнении кнопке не осталось бы места справа.
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if overflows {
                     newTabButton
                         .padding(.leading, 6)
+                        .padding(.trailing, 6)
                         .padding(.bottom, 4)
-                    Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 6)
             }
         }
         .frame(height: 36)
@@ -263,14 +284,21 @@ private struct TabWidths {
 
     private let regular: CGFloat
     private let activeID: UUID
+    /// Ширина, остающаяся вкладкам после вычета места под «+» и полей полосы.
+    /// По ней вью сравнивает сумму ширин и решает, переполнена ли полоса.
+    let tabsWidth: CGFloat
 
     init(available: CGFloat, tabs: [TabState], activeID: UUID) {
         self.activeID = activeID
 
-        // Кнопка «+» с отступом и поля полосы: без вычета последняя вкладка
-        // уходила бы под кнопку.
-        let reserved: CGFloat = 32 + 12
+        // Кнопка «+» (26) с отступами по 6 и левое поле полосы (6). Место под
+        // кнопку вычтено всегда, даже когда она едет за последней вкладкой:
+        // иначе при ширине впритык добавление кнопки само создавало бы
+        // переполнение, она перескакивала бы к правому краю — и освободившееся
+        // место снова делало бы полосу непереполненной.
+        let reserved: CGFloat = 26 + 12 + 6
         let free = max(0, available - reserved)
+        tabsWidth = free
 
         // Активная исключена из обеих групп: её ширина считается отдельно.
         let pinnedCount = tabs.filter { $0.isPinned && $0.id != activeID }.count
@@ -281,12 +309,39 @@ private struct TabWidths {
             return
         }
 
-        // Активная в дележе не участвует и резервирует ровно свой минимум:
-        // вычти за неё comfortable — и при тесноте остальные ужимались бы ради
-        // ширины, которую она всё равно не получит.
-        let taken = CGFloat(pinnedCount) * Self.pinned + Self.activeMinimum
-        let rest = max(0, free - taken)
-        regular = min(Self.comfortable, max(Self.minimum, rest / CGFloat(regularCount)))
+        // Закреплённая активная берёт ровно activeMinimum и в дележе не
+        // участвует; незакреплённая получает max(activeMinimum, regular), то
+        // есть растёт вместе с остальными, и учитывать её надо как обычную.
+        let activeIsPinned = tabs.contains { $0.id == activeID && $0.isPinned }
+
+        let fixed = CGFloat(pinnedCount) * Self.pinned + (activeIsPinned ? Self.activeMinimum : 0)
+        let rest = max(0, free - fixed)
+
+        if activeIsPinned {
+            regular = min(Self.comfortable, max(Self.minimum, rest / CGFloat(regularCount)))
+            return
+        }
+
+        // Незакреплённая активная делит остаток наравне с обычными — иначе
+        // разница между зарезервированным за неё минимумом и фактическим
+        // max(activeMinimum, regular) не учитывалась бы ни в чьей доле: при
+        // regular = 200 сумма ширин превышала бы полосу на сотню с лишним,
+        // «+» уезжал за правый край, а горизонтальный ScrollView это скрывал.
+        // Пока равная доля выше минимума активной, делим поровну на всех;
+        // ниже — активная встаёт на минимум, остаток делят остальные.
+        let equalShare = rest / CGFloat(regularCount + 1)
+        let share = equalShare >= Self.activeMinimum
+            ? equalShare
+            : (rest - Self.activeMinimum) / CGFloat(regularCount)
+
+        regular = min(Self.comfortable, max(Self.minimum, share))
+    }
+
+    /// Суммарная ширина всех вкладок. По ней вью решает, где встать кнопке
+    /// «+»: сразу за последней закладкой или у правого края, если вкладки
+    /// упёрлись в минимум и полоса прокручивается.
+    func totalWidth(tabs: [TabState]) -> CGFloat {
+        tabs.reduce(0) { $0 + width(for: $1) }
     }
 
     func width(for tab: TabState) -> CGFloat {
