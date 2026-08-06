@@ -243,9 +243,22 @@ struct FileListView: NSViewRepresentable {
             let tableColumn = NSTableColumn(identifier: column.identifier)
             tableColumn.title = column.title
             tableColumn.width = column.width
-            tableColumn.sortDescriptorPrototype = NSSortDescriptor(key: column.rawValue, ascending: true)
+            tableColumn.sortDescriptorPrototype = NSSortDescriptor(
+                key: column.rawValue, ascending: !column.prefersDescending
+            )
             table.addTableColumn(tableColumn)
         }
+
+        // Стрелка в заголовке ставится по сохранённой сортировке: без этого
+        // список был бы отсортирован по дате создания, а указатель стоял бы на
+        // «Имени» — и первый клик по дате не менял бы ничего на вид.
+        //
+        // Присваивание массива само по себе не зовёт sortDescriptorsDidChange
+        // (нотификация приходит только от клика по заголовку), поэтому лишней
+        // записи сортировки в хранилище здесь не случается.
+        table.sortDescriptors = [
+            NSSortDescriptor(key: appState.sort.key, ascending: appState.sort.ascending)
+        ]
 
         let scrollView = NSScrollView()
         scrollView.documentView = table
@@ -276,12 +289,14 @@ struct FileListView: NSViewRepresentable {
     }
 
     enum Column: String, CaseIterable {
-        case name, modified, size, kind
+        // Дата создания идёт раньше даты изменения: по ней сортируют по умолчанию.
+        case name, created, modified, size, kind
 
         var identifier: NSUserInterfaceItemIdentifier { .init(rawValue) }
         var title: String {
             switch self {
             case .name: "Имя"
+            case .created: "Дата создания"
             case .modified: "Дата изменения"
             case .size: "Размер"
             case .kind: "Тип"
@@ -290,10 +305,20 @@ struct FileListView: NSViewRepresentable {
         var width: CGFloat {
             switch self {
             case .name: 280
+            case .created: 160
             case .modified: 160
             case .size: 90
             case .kind: 120
             }
+        }
+
+        /// Направление, которое даст первый клик по заголовку.
+        ///
+        /// У дат — по убыванию: от колонки с датой ждут «свежие сверху», а
+        /// NSTableView берёт направление первого клика именно из прототипа
+        /// дескриптора, и с ascending: true первый клик показал бы самое старое.
+        var prefersDescending: Bool {
+            self == .created || self == .modified
         }
     }
 
@@ -487,7 +512,10 @@ struct FileListView: NSViewRepresentable {
 
         func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
             guard let descriptor = tableView.sortDescriptors.first, let key = descriptor.key else { return }
-            model.sort(by: key, ascending: descriptor.ascending)
+            // Через appState, а не через model напрямую: сортировка общая для
+            // всех вкладок и сохраняется между запусками, а записанная в свою
+            // модель осталась бы у одной вкладки и умерла бы с приложением.
+            appState.sort = SortSettings(key: key, ascending: descriptor.ascending)
             tableView.reloadData()
         }
 

@@ -23,9 +23,18 @@ public final class TabState: Identifiable {
     /// оставил бы закреплённую вкладку посреди обычных.
     public internal(set) var isPinned = false
 
-    init(path: URL, showHiddenFiles: Bool, watcher: any DirectoryWatching, isPinned: Bool = false) {
+    init(
+        path: URL,
+        showHiddenFiles: Bool,
+        sort: SortSettings,
+        watcher: any DirectoryWatching,
+        isPinned: Bool = false
+    ) {
         browser = BrowserModel(path: path, watcher: watcher)
         browser.showHiddenFiles = showHiddenFiles
+        // Сортировка задаётся до первой загрузки: выставленная после, она
+        // заставила бы список перестроиться сразу после появления.
+        browser.applySort(sort)
         self.isPinned = isPinned
     }
 
@@ -73,6 +82,23 @@ public final class TabsModel {
         }
     }
 
+    /// Сортировка списка — тоже настройка приложения, а не папки: раздаётся
+    /// всем вкладкам и достаётся вновь открытым. Хранится здесь, а не в
+    /// BrowserModel: своя копия у каждой вкладки означала бы, что выбор
+    /// пользователя действует только на текущей и теряется при открытии новой.
+    ///
+    /// Перечитывать папку не нужно — в отличие от showHiddenFiles сортировка
+    /// меняет только порядок уже прочитанного списка, а не его состав.
+    public var sort: SortSettings = .default {
+        didSet {
+            guard sort != oldValue else { return }
+            for tab in tabs {
+                tab.browser.applySort(sort)
+            }
+            store.save(sort: sort)
+        }
+    }
+
     private let store: TabsStore
     private let fallback: URL
     /// Наблюдатель у каждой вкладки свой. Фабрика, а не готовый экземпляр:
@@ -89,10 +115,22 @@ public final class TabsModel {
         self.fallback = path
         self.makeWatcher = makeWatcher
 
+        // Значение раздаётся вкладкам параметром конструктора, а не через
+        // didSet: на этапе инициализации tabs ещё пуст, раздавать некому, — а
+        // сам didSet записал бы в хранилище только что прочитанное оттуда.
+        let restoredSort = store.restoreSort()
+        sort = restoredSort
+
         let restored = store.restore()
         let items = restored.items.isEmpty ? [TabRecord(path: path)] : restored.items
         tabs = items.map {
-            TabState(path: $0.path, showHiddenFiles: false, watcher: makeWatcher(), isPinned: $0.isPinned)
+            TabState(
+                path: $0.path,
+                showHiddenFiles: false,
+                sort: restoredSort,
+                watcher: makeWatcher(),
+                isPinned: $0.isPinned
+            )
         }
         // Порядок из хранилища мог разойтись с инвариантом: сессию мог записать
         // билд без закрепления, а пользователь — поправить plist руками.
@@ -172,7 +210,12 @@ public final class TabsModel {
     /// Открывает папку новой вкладкой справа от активной — а не в конце списка:
     /// вкладка должна появляться рядом с той, из которой её открыли.
     public func open(_ url: URL, activate: Bool = true) {
-        let tab = TabState(path: url, showHiddenFiles: showHiddenFiles, watcher: makeWatcher())
+        let tab = TabState(
+            path: url,
+            showHiddenFiles: showHiddenFiles,
+            sort: sort,
+            watcher: makeWatcher()
+        )
         watch(tab)
         // Справа от активной, но не внутрь закреплённой группы: открытая из
         // закреплённой вкладки, новая иначе встала бы между закреплёнными и

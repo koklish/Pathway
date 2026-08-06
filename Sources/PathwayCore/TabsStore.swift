@@ -25,9 +25,32 @@ public final class TabsStore {
     /// Новый формат — массив словарей с путём и флагом.
     private let itemsKey = "tabs.items"
     private let activeKey = "tabs.activeIndex"
+    private let sortKeyKey = "sort.key"
+    private let sortAscendingKey = "sort.ascending"
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+    }
+
+    // MARK: - Сортировка
+
+    public func save(sort: SortSettings) {
+        defaults.set(sort.key, forKey: sortKeyKey)
+        defaults.set(sort.ascending, forKey: sortAscendingKey)
+    }
+
+    /// Сохранённая сортировка или умолчание.
+    ///
+    /// Направление читается через object(forKey:), а не bool(forKey:): для
+    /// отсутствующего ключа bool отдаёт false, что случайно совпадает с нужным
+    /// умолчанием, — и «ключа нет» стало бы неотличимо от «пользователь выбрал
+    /// по возрастанию». Совпадение сегодняшнее: смени умолчание на true, и
+    /// разбор молча возвращал бы не то.
+    public func restoreSort() -> SortSettings {
+        guard let key = defaults.string(forKey: sortKeyKey) else { return .default }
+        let ascending = defaults.object(forKey: sortAscendingKey) as? Bool
+            ?? SortSettings.defaultAscending
+        return SortSettings(key: key, ascending: ascending)
     }
 
     public func save(items: [TabRecord], activeIndex: Int) {

@@ -38,6 +38,13 @@ public final class AppState {
         set { tabs.showHiddenFiles = newValue }
     }
 
+    /// Сортировка списка — по тем же причинам в TabsModel: общая для всех
+    /// вкладок и переживает перезапуск.
+    public var sort: SortSettings {
+        get { tabs.sort }
+        set { tabs.sort = newValue }
+    }
+
     /// Идёт ввод текста — переименование, адресная строка или поле в диалоге.
     /// Файловые команды на это время гасятся: F2, ⌘⌫ и ⌘⇧N текстовое поле
     /// не перехватывает само, в отличие от ⌘C/⌘X/⌘V.

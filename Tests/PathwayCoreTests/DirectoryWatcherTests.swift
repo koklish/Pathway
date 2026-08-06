@@ -50,7 +50,10 @@ struct DirectoryWatcherTests {
             watcher.emit()
             await model.waitForRefresh()
 
-            #expect(model.items.map(\.name) == ["новый.txt", "старый.txt"])
+            // Состав, а не порядок: тест про то, что появившийся файл попал в
+            // список. Под сортировкой по дате создания он и так идёт первым,
+            // но проверять здесь надо не это.
+            #expect(Set(model.items.map(\.name)) == ["новый.txt", "старый.txt"])
         }
     }
 
@@ -283,7 +286,10 @@ struct DirectoryWatcherTests {
                 try await Task.sleep(for: .milliseconds(50))
             }
 
-            #expect(model.items.map(\.name) == ["новый.txt", "старый.txt"])
+            // Состав, а не порядок: тест про то, что появившийся файл попал в
+            // список. Под сортировкой по дате создания он и так идёт первым,
+            // но проверять здесь надо не это.
+            #expect(Set(model.items.map(\.name)) == ["новый.txt", "старый.txt"])
             model.cancelLoad()
         }
     }

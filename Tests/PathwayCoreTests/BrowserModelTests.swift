@@ -115,7 +115,9 @@ struct BrowserModelTests {
             model.rename(file, to: "b.txt")
 
             #expect(model.errorMessage != nil)
-            #expect(model.items.map(\.name) == ["a.txt", "b.txt"], "файлы не изменились")
+            // Состав, а не порядок: тест про то, что переименование не состоялось,
+            // и сортировка по умолчанию (дата создания) к его смыслу не относится.
+            #expect(Set(model.items.map(\.name)) == ["a.txt", "b.txt"], "файлы не изменились")
         }
     }
 
@@ -138,7 +140,7 @@ struct BrowserModelTests {
             let model = BrowserModel(path: dir)
             model.reload()
 
-            model.sort(by: "name", ascending: false)
+            model.applySort(SortSettings(key: "name", ascending: false))
 
             #expect(model.items.map(\.name) == ["папка", "b.txt", "a.txt"])
         }
@@ -152,7 +154,7 @@ struct BrowserModelTests {
             let model = BrowserModel(path: dir)
             model.reload()
 
-            model.sort(by: "size", ascending: true)
+            model.applySort(SortSettings(key: "size", ascending: true))
 
             #expect(model.items.map(\.name) == ["маленький.bin", "большой.bin"])
         }

@@ -77,8 +77,11 @@ public final class BrowserModel {
     private var operationTask: Task<Void, Never>?
     private let pasteboard: PasteboardService
     private let cache = DirectoryCache()
-    private var sortKey = "name"
-    private var sortAscending = true
+    /// Сортировку раздаёт TabsModel — она общая для всех вкладок и переживает
+    /// перезапуск. Здесь она ведомая: private(set), чтобы её нельзя было
+    /// поменять мимо TabsModel, разведя вкладки между собой.
+    public private(set) var sortKey = SortSettings.defaultKey
+    public private(set) var sortAscending = SortSettings.defaultAscending
     /// Текущая загрузка: при быстром переключении папок предыдущая отменяется,
     /// иначе медленный сетевой ответ перезапишет уже открытую папку.
     private var loadTask: Task<Void, Never>?
@@ -461,19 +464,50 @@ public final class BrowserModel {
 
     // MARK: - Сортировка и отображение
 
-    public func sort(by key: String, ascending: Bool) {
-        sortKey = key
-        sortAscending = ascending
+    /// Ставит сортировку и перестраивает список.
+    ///
+    /// Зовётся из TabsModel, а не из вью напрямую: сортировка общая для всех
+    /// вкладок, и выставленная здесь по месту развела бы их между собой.
+    public func applySort(_ sort: SortSettings) {
+        sortKey = sort.key
+        sortAscending = sort.ascending
         items = sorted(items)
     }
 
     private func sorted(_ list: [FileItem]) -> [FileItem] {
-        list.sorted { a, b in
+        Self.sorted(list, by: SortSettings(key: sortKey, ascending: sortAscending))
+    }
+
+    /// Чистая сортировка: без диска и без состояния модели, поэтому проверяется
+    /// тестами напрямую — items закрыт на запись, и подсунуть модели список
+    /// «как после быстрого прохода» иначе было бы нечем.
+    static func sorted(_ list: [FileItem], by settings: SortSettings) -> [FileItem] {
+        let sortKey = settings.key
+        let sortAscending = settings.ascending
+
+        // Первый проход отдаёт одни имена: размеров и дат ещё нет ни у кого, и
+        // сортировка по ним поставила бы список в порядке выдачи readdir, а
+        // после второго прохода перетасовала бы его целиком под курсором.
+        // По имени первый список хотя бы упорядочен понятным образом.
+        //
+        // Показывать пустой список до метаданных нельзя: ради мгновенного
+        // появления имён на сетевом диске трёхступенчатая загрузка и сделана.
+        let sortsByName = sortKey == "name" || list.allSatisfy { !$0.metadataLoaded }
+
+        return list.sorted { a, b in
             if a.isDirectory != b.isDirectory { return a.isDirectory }
+            guard !sortsByName else {
+                let byName = a.name.localizedStandardCompare(b.name) == .orderedAscending
+                // Направление уважаем и здесь: иначе «по имени по убыванию»
+                // до прихода метаданных показывал бы обратный порядок.
+                return sortKey == "name" && !sortAscending ? !byName : byName
+            }
             let result: Bool
             switch sortKey {
             case "size": result = a.size < b.size
             case "modified": result = (a.modificationDate ?? .distantPast) < (b.modificationDate ?? .distantPast)
+            case "created":
+                result = (a.effectiveCreationDate ?? .distantPast) < (b.effectiveCreationDate ?? .distantPast)
             case "kind": result = a.url.pathExtension.localizedStandardCompare(b.url.pathExtension) == .orderedAscending
             default: result = a.name.localizedStandardCompare(b.name) == .orderedAscending
             }
@@ -487,6 +521,12 @@ public final class BrowserModel {
             return item.isDirectory ? "—" : ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file)
         case "modified":
             guard let date = item.modificationDate else { return "—" }
+            return date.formatted(date: .abbreviated, time: .shortened)
+        case "created":
+            // Не прочерк при отсутствии даты создания: сортировка в этом случае
+            // берёт дату изменения, и строка с прочерком выглядела бы стоящей
+            // не на своём месте — чем задан порядок, стало бы непонятно.
+            guard let date = item.effectiveCreationDate else { return "—" }
             return date.formatted(date: .abbreviated, time: .shortened)
         case "kind":
             return Self.kindLabel(for: item)
