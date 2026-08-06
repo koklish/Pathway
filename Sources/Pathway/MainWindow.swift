@@ -162,6 +162,22 @@ struct MainWindow: View {
             appState.browser.resumeWatching()
             appState.browser.refreshAfterReturn()
         }
+        // Сон рвёт соединение с сервером, но том остаётся в таблице
+        // монтирования: система считает его существующим, а обращение к нему
+        // виснет. Снимаем такие тома и монтируем заново.
+        //
+        // Из notificationCenter самого NSWorkspace, а не из NotificationCenter
+        // .default: didWakeNotification приходит только туда, и подписка на
+        // дефолтный центр молча не сработала бы никогда.
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
+            Task {
+                await connection.reconnectStaleVolumes()
+                // После восстановления соединения: открытая на сетевом томе
+                // вкладка обязана перечитать папку, иначе покажет список,
+                // прочитанный до сна.
+                appState.browser.refreshAfterReturn()
+            }
+        }
         // Список, которого не видно, обновлять незачем, а слежение за сетевой
         // папкой продолжало бы держать соединение с сервером.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in

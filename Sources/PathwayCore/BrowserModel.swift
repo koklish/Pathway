@@ -506,8 +506,6 @@ public final class BrowserModel {
             switch sortKey {
             case "size": result = a.size < b.size
             case "modified": result = (a.modificationDate ?? .distantPast) < (b.modificationDate ?? .distantPast)
-            case "created":
-                result = (a.effectiveCreationDate ?? .distantPast) < (b.effectiveCreationDate ?? .distantPast)
             case "kind": result = a.url.pathExtension.localizedStandardCompare(b.url.pathExtension) == .orderedAscending
             default: result = a.name.localizedStandardCompare(b.name) == .orderedAscending
             }
@@ -521,12 +519,6 @@ public final class BrowserModel {
             return item.isDirectory ? "—" : ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file)
         case "modified":
             guard let date = item.modificationDate else { return "—" }
-            return date.formatted(date: .abbreviated, time: .shortened)
-        case "created":
-            // Не прочерк при отсутствии даты создания: сортировка в этом случае
-            // берёт дату изменения, и строка с прочерком выглядела бы стоящей
-            // не на своём месте — чем задан порядок, стало бы непонятно.
-            guard let date = item.effectiveCreationDate else { return "—" }
             return date.formatted(date: .abbreviated, time: .shortened)
         case "kind":
             return Self.kindLabel(for: item)

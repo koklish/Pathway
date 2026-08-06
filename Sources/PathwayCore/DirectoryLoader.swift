@@ -8,12 +8,8 @@ import Foundation
 public struct DirectoryLoader: Sendable {
     public init() {}
 
-    /// Дата создания идёт тем же запросом, что и остальные метаданные: платим за
-    /// сам вызов resourceValues, а не за каждый ключ, — отдельного прохода по
-    /// диску не добавляется. На SMB это существенно: второй проход и так самая
-    /// дорогая часть загрузки.
     private static let keys: [URLResourceKey] = [
-        .isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .creationDateKey,
+        .isDirectoryKey, .fileSizeKey, .contentModificationDateKey,
     ]
 
     /// Полная загрузка: имена и метаданные за один проход.
@@ -110,7 +106,6 @@ public struct DirectoryLoader: Sendable {
             isDirectory: values?.isDirectory ?? false,
             size: Int64(values?.fileSize ?? 0),
             modificationDate: values?.contentModificationDate,
-            creationDate: values?.creationDate,
             metadataLoaded: true
         )
     }

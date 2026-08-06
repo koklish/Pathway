@@ -75,6 +75,14 @@ public protocol Mounting: Sendable {
     ) throws -> MountResult
 
     func unmount(_ mountPoint: URL) throws
+
+    /// Снимает том, не спрашивая систему разрешения и не дожидаясь его ответа.
+    ///
+    /// Нужен для тома, отвалившегося после сна: обычный unmount идёт через
+    /// NSWorkspace и на таком томе виснет сам — снять его можно только
+    /// форсированно. Отдельный метод, а не флаг у unmount: перепутать их в
+    /// обычном отключении значило бы сорвать запись открытого файла.
+    func forceUnmount(_ mountPoint: URL) throws
 }
 
 /// Подключает сетевые диски через NetFS.
@@ -149,6 +157,24 @@ public struct ServerMounter: Mounting, Sendable {
             try NSWorkspace.shared.unmountAndEjectDevice(at: mountPoint)
         } catch {
             throw MountError(busyVolumeAt: mountPoint)
+        }
+    }
+
+    /// Снимает залипший том системным вызовом, минуя NSWorkspace.
+    ///
+    /// MNT_FORCE — единственный путь для тома, чей сервер уже не отвечает:
+    /// NSWorkspace на нём ждёт ответа файловой системы и виснет вместе с ней.
+    /// Потерять несохранённое здесь нечем — сервера, куда писать, уже нет.
+    ///
+    /// Вызов блокирующий — выполнять вне главного потока.
+    public func forceUnmount(_ mountPoint: URL) throws {
+        // Darwin. обязателен: без него имя разрешается в метод этого же типа.
+        guard Darwin.unmount(mountPoint.path, MNT_FORCE) == 0 else {
+            // EINVAL означает, что тома в таблице монтирования уже нет: его
+            // сняла система или Finder, пока мы собирались. Цель достигнута
+            // не нами — это успех, а не ошибка.
+            if errno == EINVAL { return }
+            throw MountError(code: errno, host: mountPoint.lastPathComponent)
         }
     }
 }

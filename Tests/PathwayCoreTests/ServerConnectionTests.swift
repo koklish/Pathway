@@ -18,6 +18,11 @@ final class RecordingMounter: Mounting, @unchecked Sendable {
     private(set) var callCount = 0
     private(set) var unmounted: [URL] = []
     var unmountError: MountError?
+    /// Отдельный счётчик, а не общий с unmounted: «том сняли принудительно» —
+    /// это ровно то, что проверяет переподключение после сна, и слитый с
+    /// обычным отключением он не отличал бы одно от другого.
+    private(set) var forceUnmounted: [URL] = []
+    var forceUnmountError: MountError?
 
     init(_ behaviour: Behaviour) {
         self.behaviour = behaviour
@@ -39,6 +44,11 @@ final class RecordingMounter: Mounting, @unchecked Sendable {
     func unmount(_ mountPoint: URL) throws {
         if let unmountError { throw unmountError }
         unmounted.append(mountPoint)
+    }
+
+    func forceUnmount(_ mountPoint: URL) throws {
+        if let forceUnmountError { throw forceUnmountError }
+        forceUnmounted.append(mountPoint)
     }
 }
 

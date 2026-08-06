@@ -289,14 +289,12 @@ struct FileListView: NSViewRepresentable {
     }
 
     enum Column: String, CaseIterable {
-        // Дата создания идёт раньше даты изменения: по ней сортируют по умолчанию.
-        case name, created, modified, size, kind
+        case name, modified, size, kind
 
         var identifier: NSUserInterfaceItemIdentifier { .init(rawValue) }
         var title: String {
             switch self {
             case .name: "Имя"
-            case .created: "Дата создания"
             case .modified: "Дата изменения"
             case .size: "Размер"
             case .kind: "Тип"
@@ -305,7 +303,6 @@ struct FileListView: NSViewRepresentable {
         var width: CGFloat {
             switch self {
             case .name: 280
-            case .created: 160
             case .modified: 160
             case .size: 90
             case .kind: 120
@@ -314,11 +311,11 @@ struct FileListView: NSViewRepresentable {
 
         /// Направление, которое даст первый клик по заголовку.
         ///
-        /// У дат — по убыванию: от колонки с датой ждут «свежие сверху», а
+        /// У даты — по убыванию: от колонки с датой ждут «свежие сверху», а
         /// NSTableView берёт направление первого клика именно из прототипа
         /// дескриптора, и с ascending: true первый клик показал бы самое старое.
         var prefersDescending: Bool {
-            self == .created || self == .modified
+            self == .modified
         }
     }
 

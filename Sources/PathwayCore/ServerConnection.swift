@@ -41,6 +41,13 @@ public final class ServerConnection {
 
     private let credentials: any CredentialStoring
     private let mounter: any Mounting
+    /// Отвечает ли том в своей точке монтирования.
+    ///
+    /// Замыкание, а не прямой вызов MountedServers.responds: иначе тест
+    /// переподключения полез бы в настоящую файловую систему и зависел бы от
+    /// того, что смонтировано на машине в момент прогона. По той же причине,
+    /// по которой в проекте протоколами закрыты все остальные границы с ОС.
+    private let probe: @Sendable (URL) async -> Bool
 
     /// Адреса, которые сейчас подключаются, — для индикатора в строке сайдбара.
     public private(set) var connecting: Set<String> = []
@@ -52,12 +59,14 @@ public final class ServerConnection {
             legacy: KeychainCredentialStore()
         ),
         mounter: any Mounting = ServerMounter(),
-        mounted: MountedServers = MountedServers()
+        mounted: MountedServers = MountedServers(),
+        probe: @escaping @Sendable (URL) async -> Bool = { await MountedServers.responds(at: $0) }
     ) {
         self.bookmarks = bookmarks
         self.credentials = credentials
         self.mounter = mounter
         self.mounted = mounted
+        self.probe = probe
     }
 
     public func isConnecting(_ server: ServerAddress) -> Bool {
@@ -185,6 +194,47 @@ public final class ServerConnection {
             return error.message
         } catch {
             return error.localizedDescription
+        }
+    }
+
+    // MARK: - Переподключение после сна
+
+    /// Снимает отвалившиеся тома и монтирует их заново.
+    ///
+    /// Сон рвёт SMB-соединение, но том остаётся в таблице монтирования: система
+    /// считает его существующим, приложение — подключённым, а любое обращение к
+    /// нему виснет до системного таймаута. Отсюда жалоба «после сна обратно уже
+    /// не подключается»: переподключаться было некому, ведь по всем признакам
+    /// том на месте.
+    ///
+    /// Залипший том снимается принудительно **в любом случае** — даже когда
+    /// заново смонтировать его заведомо не выйдет. Оставленный, он продолжит
+    /// вешать приложение при каждом обращении, а это и есть то, на что жалуются.
+    ///
+    /// Неудача переподключения проходит молча: ноутбук, открытый дома без VPN,
+    /// иначе встречал бы человека алертом каждое утро, хотя ничего не сломано —
+    /// сервер просто недоступен. Сервер остаётся в сайдбаре отключённым, и клик
+    /// по нему запускает обычное подключение со всеми диалогами.
+    public func reconnectStaleVolumes() async {
+        // Список снимаем до первого await: за время проверок он изменится —
+        // forget по ходу дела правит ровно то, по чему мы идём.
+        let entries = mounted.entries
+
+        for entry in entries {
+            guard await probe(entry.mountPoint) == false else { continue }
+
+            let mounter = self.mounter
+            let point = entry.mountPoint
+            // Ошибку глотаем: том мог сняться сам, пока мы к нему шли, и
+            // «не удалось отключить то, чего нет» — не повод бросать
+            // переподключение.
+            try? await Task.detached { try mounter.forceUnmount(point) }.value
+            mounted.forget(entry.server)
+
+            // Через connect, а не своим путём: выбор учётных данных — сохранённый
+            // пароль, гостевой вход, перенос старой записи Связки — там уже
+            // разобран, и второй его экземпляр разошёлся бы с первым.
+            _ = await connect(to: entry.server)
         }
     }
 

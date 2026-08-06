@@ -16,80 +16,17 @@ struct SortingTests {
 
     private var home: URL { FileManager.default.homeDirectoryForCurrentUser }
 
-    /// Файл с заданной датой создания. Дата ставится явно: создать файлы
-    /// «в разное время» иначе можно только паузами, а они делают тест медленным
-    /// и ненадёжным на быстрой машине.
-    private func makeFile(
-        _ name: String, in dir: URL, created: Date, modified: Date? = nil
-    ) throws {
+    /// Файл с заданной датой изменения. Дата ставится явно: развести файлы «во
+    /// времени» иначе можно только паузами, а они делают тест медленным и
+    /// ненадёжным на быстрой машине.
+    private func makeFile(_ name: String, in dir: URL, modified: Date) throws {
         let url = dir.appendingPathComponent(name)
         try Data("x".utf8).write(to: url)
-        try FileManager.default.setAttributes(
-            [.creationDate: created, .modificationDate: modified ?? created],
-            ofItemAtPath: url.path
-        )
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
     }
 
     private func date(_ day: Int) -> Date {
         Date(timeIntervalSince1970: TimeInterval(day) * 86_400)
-    }
-
-    // MARK: - Порядок
-
-    @Test("по умолчанию сортирует по дате создания, свежие сверху")
-    func defaultsToCreationDateNewestFirst() throws {
-        try withTempDir { dir in
-            try makeFile("старый.txt", in: dir, created: date(10))
-            try makeFile("свежий.txt", in: dir, created: date(30))
-            try makeFile("средний.txt", in: dir, created: date(20))
-
-            let model = BrowserModel(path: dir)
-            model.reload()
-
-            #expect(model.items.map(\.name) == ["свежий.txt", "средний.txt", "старый.txt"])
-        }
-    }
-
-    @Test("при отсутствии даты создания берёт дату изменения, а не отправляет запись в конец")
-    func fallsBackToModificationDate() {
-        // Через FileItem напрямую: файловая система macOS дату создания ставит
-        // всегда, а воспроизвести её отсутствие нужно именно для SMB.
-        let withoutCreation = FileItem(
-            url: URL(fileURLWithPath: "/tmp/без-создания.txt"),
-            name: "без-создания.txt",
-            isDirectory: false,
-            modificationDate: date(20),
-            creationDate: nil
-        )
-
-        #expect(withoutCreation.effectiveCreationDate == date(20))
-    }
-
-    @Test("папки остаются выше файлов при сортировке по дате")
-    func directoriesStayOnTopWhenSortingByDate() throws {
-        try withTempDir { dir in
-            // Папка заведомо старше файла: без правила «папки сверху» она ушла бы вниз.
-            let folder = dir.appendingPathComponent("папка")
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
-            try FileManager.default.setAttributes([.creationDate: date(1)], ofItemAtPath: folder.path)
-            try makeFile("свежий.txt", in: dir, created: date(99))
-
-            let model = BrowserModel(path: dir)
-            model.reload()
-
-            #expect(model.items.map(\.name) == ["папка", "свежий.txt"])
-        }
-    }
-
-    @Test("до прихода метаданных сортирует по имени, а не по пустым датам")
-    func sortsByNameUntilMetadataArrives() {
-        // Записи быстрого прохода: metadataLoaded == false, дат нет ни у кого.
-        let names = ["в.txt", "а.txt", "б.txt"].map { fastPassItem($0) }
-
-        let sorted = BrowserModel.sorted(names, by: SortSettings(key: "created", ascending: false))
-
-        // Не порядок выдачи readdir и не обратный ему: именно по имени.
-        #expect(sorted.map(\.name) == ["а.txt", "б.txt", "в.txt"])
     }
 
     /// Запись такая, какой её отдаёт первый проход загрузки: имя есть, метаданных нет.
@@ -102,18 +39,61 @@ struct SortingTests {
         )
     }
 
+    // MARK: - Порядок
+
+    @Test("по умолчанию сортирует по дате изменения, свежие сверху")
+    func defaultsToModificationDateNewestFirst() throws {
+        try withTempDir { dir in
+            try makeFile("старый.txt", in: dir, modified: date(10))
+            try makeFile("свежий.txt", in: dir, modified: date(30))
+            try makeFile("средний.txt", in: dir, modified: date(20))
+
+            let model = BrowserModel(path: dir)
+            model.reload()
+
+            #expect(model.items.map(\.name) == ["свежий.txt", "средний.txt", "старый.txt"])
+        }
+    }
+
+    @Test("папки остаются выше файлов при сортировке по дате")
+    func directoriesStayOnTopWhenSortingByDate() throws {
+        try withTempDir { dir in
+            // Папка заведомо старше файла: без правила «папки сверху» она ушла бы вниз.
+            let folder = dir.appendingPathComponent("папка")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+            try FileManager.default.setAttributes([.modificationDate: date(1)], ofItemAtPath: folder.path)
+            try makeFile("свежий.txt", in: dir, modified: date(99))
+
+            #expect(model(at: dir).items.map(\.name) == ["папка", "свежий.txt"])
+        }
+    }
+
+    /// Прочитанная папка — сокращение для тестов, которым важен только результат.
+    private func model(at dir: URL) -> BrowserModel {
+        let model = BrowserModel(path: dir)
+        model.reload()
+        return model
+    }
+
+    @Test("до прихода метаданных сортирует по имени, а не по пустым датам")
+    func sortsByNameUntilMetadataArrives() {
+        // Записи быстрого прохода: metadataLoaded == false, дат нет ни у кого.
+        let names = ["в.txt", "а.txt", "б.txt"].map { fastPassItem($0) }
+
+        let sorted = BrowserModel.sorted(names, by: SortSettings(key: "modified", ascending: false))
+
+        // Не порядок выдачи readdir и не обратный ему: именно по имени.
+        #expect(sorted.map(\.name) == ["а.txt", "б.txt", "в.txt"])
+    }
+
     @Test("после прихода метаданных пересортировывает по дате")
     func reordersOnceMetadataArrives() throws {
         try withTempDir { dir in
-            try makeFile("а-старый.txt", in: dir, created: date(10))
-            try makeFile("я-свежий.txt", in: dir, created: date(30))
-
-            let model = BrowserModel(path: dir)
-            model.applySort(SortSettings(key: "created", ascending: false))
-            model.reload()
+            try makeFile("а-старый.txt", in: dir, modified: date(10))
+            try makeFile("я-свежий.txt", in: dir, modified: date(30))
 
             // Алфавит поставил бы «а-старый» первым — значит порядок задан датой.
-            #expect(model.items.map(\.name) == ["я-свежий.txt", "а-старый.txt"])
+            #expect(model(at: dir).items.map(\.name) == ["я-свежий.txt", "а-старый.txt"])
         }
     }
 
@@ -126,33 +106,24 @@ struct SortingTests {
         #expect(sorted.map(\.name) == ["б.txt", "а.txt"])
     }
 
-    // MARK: - Колонка
-
-    @Test("колонка даты создания при отсутствии даты показывает дату изменения, а не прочерк")
-    func creationColumnFallsBackInsteadOfDash() {
-        let model = BrowserModel(path: URL(fileURLWithPath: "/tmp"))
-        let item = FileItem(
-            url: URL(fileURLWithPath: "/tmp/файл.txt"),
-            name: "файл.txt",
+    @Test("файл без даты изменения уходит вниз, а не ломает порядок остальных")
+    func itemWithoutDateSinksToBottom() {
+        let dated = FileItem(
+            url: URL(fileURLWithPath: "/tmp/с-датой.txt"),
+            name: "с-датой.txt",
             isDirectory: false,
-            modificationDate: date(20),
-            creationDate: nil
+            modificationDate: date(10)
+        )
+        let undated = FileItem(
+            url: URL(fileURLWithPath: "/tmp/без-даты.txt"),
+            name: "без-даты.txt",
+            isDirectory: false,
+            modificationDate: nil
         )
 
-        #expect(model.text(for: item, column: "created") != "—")
-    }
+        let sorted = BrowserModel.sorted([undated, dated], by: SortSettings(key: "modified", ascending: false))
 
-    @Test("колонка даты создания без обеих дат показывает прочерк")
-    func creationColumnShowsDashWithoutAnyDate() {
-        let model = BrowserModel(path: URL(fileURLWithPath: "/tmp"))
-        let item = FileItem(
-            url: URL(fileURLWithPath: "/tmp/файл.txt"),
-            name: "файл.txt",
-            isDirectory: false,
-            metadataLoaded: false
-        )
-
-        #expect(model.text(for: item, column: "created") == "—")
+        #expect(sorted.map(\.name) == ["с-датой.txt", "без-даты.txt"])
     }
 
     // MARK: - Общая настройка
@@ -202,11 +173,11 @@ struct SortingTests {
         #expect(restored == SortSettings(key: "kind", ascending: true))
     }
 
-    @Test("без сохранённого значения умолчание — дата создания по убыванию")
-    func defaultSortIsCreationDescending() {
+    @Test("без сохранённого значения умолчание — дата изменения по убыванию")
+    func defaultSortIsModifiedDescending() {
         let restored = TabsStore(defaults: makeDefaults()).restoreSort()
 
-        #expect(restored.key == "created")
+        #expect(restored.key == "modified")
         #expect(restored.ascending == false)
     }
 
@@ -215,7 +186,7 @@ struct SortingTests {
         let defaults = makeDefaults()
         // Направление по возрастанию совпадает с тем, что UserDefaults.bool
         // возвращает для отсутствующего ключа, — потому его и стережём.
-        TabsStore(defaults: defaults).save(sort: SortSettings(key: "created", ascending: true))
+        TabsStore(defaults: defaults).save(sort: SortSettings(key: "modified", ascending: true))
 
         #expect(TabsStore(defaults: defaults).restoreSort().ascending)
     }
@@ -225,34 +196,8 @@ struct SortingTests {
         let defaults = makeDefaults()
         let model = TabsModel(path: home, store: TabsStore(defaults: defaults))
 
-        model.sort = SortSettings(key: "modified", ascending: true)
+        model.sort = SortSettings(key: "name", ascending: true)
 
-        #expect(TabsStore(defaults: defaults).restoreSort() == SortSettings(key: "modified", ascending: true))
-    }
-
-    // MARK: - Загрузка
-
-    @Test("быстрый проход оставляет дату создания пустой, а не подставляет текущее время")
-    func fastPassLeavesCreationDateEmpty() throws {
-        try withTempDir { dir in
-            try makeFile("файл.txt", in: dir, created: date(10))
-
-            let names = try DirectoryLoader().loadNames(directory: dir)
-
-            #expect(names.first?.creationDate == nil)
-            #expect(names.first?.metadataLoaded == false)
-        }
-    }
-
-    @Test("второй проход заполняет дату создания")
-    func metadataPassFillsCreationDate() throws {
-        try withTempDir { dir in
-            try makeFile("файл.txt", in: dir, created: date(10))
-            let loader = DirectoryLoader()
-
-            let detailed = loader.loadMetadata(for: try loader.loadNames(directory: dir))
-
-            #expect(detailed.first?.creationDate == date(10))
-        }
+        #expect(TabsStore(defaults: defaults).restoreSort() == SortSettings(key: "name", ascending: true))
     }
 }

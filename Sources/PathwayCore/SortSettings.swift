@@ -10,11 +10,15 @@ public struct SortSettings: Equatable, Sendable {
     public let key: String
     public let ascending: Bool
 
-    /// Умолчание — дата создания, свежие сверху.
+    /// Умолчание — дата изменения, свежие сверху.
+    ///
+    /// Именно изменения, а не создания: создание файла — тоже изменение, и на
+    /// практике даты совпадают, а на SMB даты создания часто нет вовсе.
+    /// Отдельное поле ради этого не заводится.
     ///
     /// Свежие сверху — это ascending == false: дата по возрастанию ставит
     /// наверх самые старые файлы, то есть обратное тому, чего ждут от списка.
-    public static let defaultKey = "created"
+    public static let defaultKey = "modified"
     public static let defaultAscending = false
 
     public static let `default` = SortSettings(key: defaultKey, ascending: defaultAscending)
