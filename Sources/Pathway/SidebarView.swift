@@ -10,6 +10,8 @@ struct SidebarView: View {
     let update: UpdateService
     let onNewConnection: () -> Void
     let onEditServer: (ServerAddress) -> Void
+    /// Сервер попросил учётные данные — открыть форму входа, а не настройки.
+    let onAuthenticateServer: (ServerAddress, CredentialPrompt) -> Void
     @State private var sidebar = SidebarModel()
 
     var body: some View {
@@ -53,7 +55,8 @@ struct SidebarView: View {
                             connection: connection,
                             sidebar: sidebar,
                             onNewConnection: onNewConnection,
-                            onEditSettings: onEditServer
+                            onEditSettings: onEditServer,
+                            onAuthenticate: onAuthenticateServer
                         )
 
                         VolumesSection(model: model, connection: connection)

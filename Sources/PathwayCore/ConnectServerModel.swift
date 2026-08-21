@@ -151,6 +151,29 @@ public final class ConnectServerModel {
         noticeMessage = nil
     }
 
+    /// Открывает форму входа на сервер, к которому не удалось подключиться.
+    ///
+    /// Отдельный вход, а не `startEditing`: та ведёт на шаг настроек, где кнопка
+    /// сохраняет учётные данные и закрывает диалог, **не подключаясь**. Для
+    /// «Изменить настройки…» это верно, а после отказа в доступе — нет: человек
+    /// вводил пароль, чтобы попасть на сервер, и получал закрытое окно с тем же
+    /// отключённым сервером, а следующий клик снова просил пароль.
+    ///
+    /// Логин подставляется сохранённый: он уже известен, и заставлять набирать
+    /// его заново незачем. Пароль остаётся пустым — сохранённый не подошёл или
+    /// его нет вовсе, и подставлять тут нечего.
+    public func startAuthenticating(_ server: ServerAddress, reason: CredentialPrompt = .firstTime) {
+        step = .credentials(server)
+        addressText = server.key.removingPercentEncoding ?? server.key
+        username = server.user ?? connection.savedUser(for: server) ?? ""
+        password = ""
+        hasStoredPassword = false
+        login = connection.bookmarks.bookmark(for: server)?.isGuest == true ? .guest : .registered
+        saveToKeychain = true
+        errorMessage = nil
+        noticeMessage = reason.message
+    }
+
     public func selectBookmark(_ bookmark: ServerBookmark) {
         addressText = bookmark.address.removingPercentEncoding ?? bookmark.address
     }

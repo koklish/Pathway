@@ -38,6 +38,10 @@ struct MainWindow: View {
                 onEditServer: { server in
                     connectModel.startEditing(server)
                     showConnectServer = true
+                },
+                onAuthenticateServer: { server, reason in
+                    connectModel.startAuthenticating(server, reason: reason)
+                    showConnectServer = true
                 }
             )
             .onboardingTarget(.sidebar)
@@ -281,9 +285,11 @@ struct MainWindow: View {
             switch await connection.connect(to: server) {
             case .mounted(let point):
                 appState.tabs.open(point, activate: true)
-            case .needsCredentials:
-                // Учётных данных нет или устарели — открываем диалог на этом сервере.
-                connectModel.startEditing(server)
+            case .needsCredentials(_, let reason):
+                // Форма входа, а не настройки: её кнопка подключается, а
+                // «Сохранить» в настройках только записала бы пароль и закрыла
+                // окно, оставив сервер отключённым.
+                connectModel.startAuthenticating(server, reason: reason)
                 showConnectServer = true
             case .failed(let message):
                 model.errorMessage = message

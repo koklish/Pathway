@@ -33,6 +33,8 @@ struct NetworkSection: View {
     /// Открыть диалог: новое подключение или настройки сохранённого сервера.
     let onNewConnection: () -> Void
     let onEditSettings: (ServerAddress) -> Void
+    /// Открыть форму входа: сервер не пустил без учётных данных.
+    let onAuthenticate: (ServerAddress, CredentialPrompt) -> Void
 
     @State private var errorMessage: String?
     @State private var pendingRemoval: ServerBookmark?
@@ -70,6 +72,7 @@ struct NetworkSection: View {
                     connection: connection,
                     sidebar: sidebar,
                     onEditSettings: { onEditSettings(entry.server) },
+                    onAuthenticate: { onAuthenticate(entry.server, $0) },
                     onRemove: { pendingRemoval = entry.bookmark },
                     onError: { errorMessage = $0 }
                 )
@@ -129,6 +132,7 @@ private struct ServerNode: View {
     let connection: ServerConnection
     let sidebar: SidebarModel
     let onEditSettings: () -> Void
+    let onAuthenticate: (CredentialPrompt) -> Void
     let onRemove: () -> Void
     let onError: (String) -> Void
 
@@ -150,6 +154,7 @@ private struct ServerNode: View {
                 hasChildren: !children.isEmpty,
                 onToggleExpansion: toggleExpansion,
                 onEditSettings: onEditSettings,
+                onAuthenticate: onAuthenticate,
                 onRemove: onRemove,
                 onError: onError
             )
@@ -185,6 +190,9 @@ private struct ServerRow: View {
     let hasChildren: Bool
     let onToggleExpansion: () -> Void
     let onEditSettings: () -> Void
+    /// Сервер потребовал учётные данные. Отдельно от `onEditSettings`: та ведёт
+    /// в настройки, где кнопка сохраняет и закрывает окно, не подключаясь.
+    let onAuthenticate: (CredentialPrompt) -> Void
     let onRemove: () -> Void
     let onError: (String) -> Void
 
@@ -364,9 +372,10 @@ private struct ServerRow: View {
                 appState.tabs.open(point, activate: true)
             case .failed(let message):
                 onError(message)
-            case .needsCredentials:
-                // Учётных данных нет или они устарели — дальше разбирается диалог.
-                onEditSettings()
+            case .needsCredentials(_, let reason):
+                // Учётных данных нет или они устарели — открываем форму входа.
+                // Именно форму входа, а не настройки: её кнопка подключается.
+                onAuthenticate(reason)
             }
         }
     }
