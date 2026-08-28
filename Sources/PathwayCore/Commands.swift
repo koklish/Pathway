@@ -46,6 +46,8 @@ public enum CommandID: String, CaseIterable, Sendable {
     case goBack, goForward, goUp, editPath, findInFolder, searchContents, toggleFavorite
     // Вкладки
     case newTab, closeTab, pinTab, nextTab, previousTab, openInNewTab
+    // Git
+    case gitClone, gitFetch, gitPull, gitPush, gitSync, gitCopyBranch
 }
 
 /// Команда приложения: единственное описание действия, из которого строятся
@@ -71,6 +73,9 @@ public enum CommandRegistry {
     /// исходником, а не во временной папке.
     public static let writesToDisk: Set<CommandID> = [
         .newFolder, .rename, .batchRename, .moveToTrash, .paste, .cut, .compress,
+        // Push не пишет: он только отправляет уже записанное. Fetch пишет в
+        // .git, pull — ещё и в рабочее дерево, clone создаёт папку.
+        .gitClone, .gitFetch, .gitPull, .gitSync,
     ]
 
     public static subscript(id: CommandID) -> AppCommand {
@@ -417,6 +422,65 @@ public enum CommandRegistry {
             icon: "plus.rectangle.on.rectangle",
             isEnabled: { !$0.isEditingText && $0.browser.commandFolder != $0.browser.pane.path },
             run: { $0.tabs.open($0.browser.commandFolder, activate: true) }
+        ),
+        AppCommand(
+            id: .gitClone,
+            title: "Клонировать репозиторий…",
+            // Без шортката: свободных сочетаний под git-команды нет, а
+            // конфликтовать со стандартными ради редких сетевых операций незачем.
+            shortcut: nil,
+            icon: "square.and.arrow.down",
+            // Действует на текущую папку как место назначения, а не на
+            // выделение, — поэтому доступен и на пустом месте.
+            isEnabled: { !$0.isEditingText && !$0.browser.isReadOnlyVolume && !$0.browser.isBusy },
+            run: { $0.pendingClone = $0.browser.pane.path }
+        ),
+        // Названия операций английские — единственное исключение из правила
+        // «весь интерфейс русский». Pull, Push и Fetch суть их имена в самом
+        // git, и перевод заставлял бы сверять «Загрузить» с git pull при
+        // каждом чтении. На «Клонировать репозиторий…» это не распространяется:
+        // там пункт открывает диалог, а не запускает одноимённую операцию.
+        AppCommand(
+            id: .gitFetch,
+            title: "Fetch",
+            shortcut: nil,
+            icon: "arrow.down.circle",
+            isEnabled: { $0.isGitAvailable && !$0.browser.isReadOnlyVolume },
+            run: { $0.browser.gitFetch() }
+        ),
+        AppCommand(
+            id: .gitPull,
+            title: "Pull",
+            shortcut: nil,
+            icon: "arrow.down.to.line",
+            isEnabled: { $0.isGitAvailable && !$0.browser.isReadOnlyVolume },
+            run: { $0.browser.gitPull() }
+        ),
+        AppCommand(
+            id: .gitPush,
+            title: "Push",
+            shortcut: nil,
+            icon: "arrow.up.to.line",
+            isEnabled: { $0.isGitAvailable },
+            run: { $0.browser.gitPush() }
+        ),
+        AppCommand(
+            id: .gitSync,
+            title: "Sync",
+            shortcut: nil,
+            icon: "arrow.triangle.2.circlepath",
+            isEnabled: { $0.isGitAvailable && !$0.browser.isReadOnlyVolume },
+            run: { $0.browser.gitSync() }
+        ),
+        AppCommand(
+            id: .gitCopyBranch,
+            title: "Copy branch name",
+            shortcut: nil,
+            icon: "doc.on.doc",
+            // Без проверки isReadOnlyVolume: команда пишет в буфер, а не на
+            // диск, и на томе только для чтения осмысленна ровно так же.
+            isEnabled: { $0.isGitAvailable },
+            run: { $0.browser.gitCopyBranch() }
         ),
     ]
 

@@ -63,6 +63,17 @@ struct AppCommands: Commands {
             item(.refresh)
         }
 
+        // Своё меню, а не пункты в «Файл»: четыре команды затерялись бы среди
+        // файловых, а меню с понятным именем сразу говорит, что приложение
+        // умеет работать с репозиториями.
+        CommandMenu("Репозиторий") {
+            item(.gitClone)
+            Divider()
+            item(.gitFetch)
+            item(.gitPull)
+            item(.gitPush)
+        }
+
         CommandMenu("Переход") {
             item(.goBack)
             item(.goForward)

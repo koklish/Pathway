@@ -194,6 +194,25 @@ struct MainWindow: View {
                 .modalTextEditing(appState)
         }
         .sheet(isPresented: Binding(
+            get: { appState.pendingClone != nil }, set: { if !$0 { appState.pendingClone = nil } }
+        )) {
+            if let destination = appState.pendingClone {
+                CloneDialogView(model: model, destination: destination) { appState.pendingClone = nil }
+                    .modalTextEditing(appState)
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { appState.pendingBranchSwitch != nil },
+            set: { if !$0 { appState.pendingBranchSwitch = nil } }
+        )) {
+            if let repository = appState.pendingBranchSwitch {
+                BranchSwitchSheet(model: model, repository: repository) {
+                    appState.pendingBranchSwitch = nil
+                }
+                .modalTextEditing(appState)
+            }
+        }
+        .sheet(isPresented: Binding(
             get: { appState.pendingCompress != nil }, set: { if !$0 { appState.pendingCompress = nil } }
         )) {
             if let items = appState.pendingCompress {

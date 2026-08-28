@@ -15,7 +15,7 @@ public struct DirectoryLoader: Sendable {
     /// Полная загрузка: имена и метаданные за один проход.
     public func load(directory: URL, showHidden: Bool = false) throws -> [FileItem] {
         let urls = try contents(of: directory, showHidden: showHidden)
-        return Self.sortedByName(urls.map(Self.item(for:)))
+        return Self.sortedByName(urls.map { Self.item(for: $0) })
     }
 
     /// Быстрый первый проход: только имена и признак папки.
@@ -82,11 +82,15 @@ public struct DirectoryLoader: Sendable {
         return info.st_flags & UInt32(UF_HIDDEN) != 0
     }
 
-    /// Второй проход: размеры и даты для уже показанного списка.
-    public func loadMetadata(for items: [FileItem]) -> [FileItem] {
+    /// Второй проход: размеры, даты и ветка для уже показанного списка.
+    ///
+    /// Локальность тома передаётся параметром, а не выясняется внутри: это одно
+    /// свойство папки на весь проход, и запрос на каждую строку был бы тем же
+    /// сетевым обращением, которого мы здесь и избегаем.
+    public func loadMetadata(for items: [FileItem], isLocalVolume: Bool = true) -> [FileItem] {
         items.map { item in
             guard !item.metadataLoaded else { return item }
-            return Self.item(for: item.url)
+            return Self.item(for: item.url, readsBranch: isLocalVolume)
         }
     }
 
@@ -98,15 +102,25 @@ public struct DirectoryLoader: Sendable {
         )
     }
 
-    private static func item(for url: URL) -> FileItem {
+    private static func item(for url: URL, readsBranch: Bool = true) -> FileItem {
         let values = try? url.resourceValues(forKeys: Set(keys))
+        let isDirectory = values?.isDirectory ?? false
         return FileItem(
             url: url,
             name: SystemFolderNames.displayName(for: url),
-            isDirectory: values?.isDirectory ?? false,
+            isDirectory: isDirectory,
             size: Int64(values?.fileSize ?? 0),
             modificationDate: values?.contentModificationDate,
-            metadataLoaded: true
+            metadataLoaded: true,
+            // Только для папок: у файла ветки быть не может, а лишняя проверка
+            // на каждый файл — обращение к диску там, где оно заведомо впустую.
+            //
+            // И только на локальном томе: холодная проверка отсутствия .git на
+            // SMB стоит 13–21 мс на папку против 0.02 мс локально, то есть 500
+            // подпапок дали бы до десяти секунд фоновых запросов — а репозитории
+            // на сетевых шарах практически не встречаются. Тот же расчёт, что у
+            // isHiddenByFlag выше.
+            branch: isDirectory && readsBranch ? GitRepository.branch(at: url) : nil
         )
     }
 

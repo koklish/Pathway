@@ -243,6 +243,9 @@ struct FileListView: NSViewRepresentable {
             let tableColumn = NSTableColumn(identifier: column.identifier)
             tableColumn.title = column.title
             tableColumn.width = column.width
+            // Умолчание AppKit — 10 pt: колонку можно утащить до нечитаемой
+            // полоски, где не помещается даже значок.
+            tableColumn.minWidth = 50
             tableColumn.sortDescriptorPrototype = NSSortDescriptor(
                 key: column.rawValue, ascending: !column.prefersDescending
             )
@@ -289,7 +292,7 @@ struct FileListView: NSViewRepresentable {
     }
 
     enum Column: String, CaseIterable {
-        case name, modified, size, kind
+        case name, modified, size, kind, branch
 
         var identifier: NSUserInterfaceItemIdentifier { .init(rawValue) }
         var title: String {
@@ -298,6 +301,7 @@ struct FileListView: NSViewRepresentable {
             case .modified: "Дата изменения"
             case .size: "Размер"
             case .kind: "Тип"
+            case .branch: "Ветка"
             }
         }
         var width: CGFloat {
@@ -306,6 +310,10 @@ struct FileListView: NSViewRepresentable {
             case .modified: 160
             case .size: 90
             case .kind: 120
+            // Шире остальных: ветки вида feature/COMETP/1897 при 140 pt
+            // обрезались по центру постоянно, а обрезка должна быть
+            // исключением, а не нормой.
+            case .branch: 180
             }
         }
 
@@ -372,6 +380,48 @@ struct FileListView: NSViewRepresentable {
         }
     }
 
+    /// Ячейка колонки «Ветка»: держит чип и следит за подсветкой строки.
+    ///
+    /// Наследует NSTableCellView ради backgroundStyle — AppKit сообщает им о
+    /// выделении строки, и без него синий чип на синем фоне исчезал бы.
+    final class BranchChipCell: NSTableCellView {
+        private let chip = BranchChipView()
+
+        var branch: String? {
+            didSet {
+                guard branch != oldValue else { return }
+                chip.content = branch.map {
+                    // Статус в списке не считается: он стоит git status на
+                    // проект, а это до 21 мс на папку на сетевом томе.
+                    BranchChipView.Content(branch: $0, isDetached: GitRepository.isDetached($0))
+                }
+                chip.isHidden = branch == nil
+                needsLayout = true
+            }
+        }
+
+        init(identifier: NSUserInterfaceItemIdentifier) {
+            super.init(frame: .zero)
+            self.identifier = identifier
+            addSubview(chip)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) не используется") }
+
+        override var backgroundStyle: NSView.BackgroundStyle {
+            didSet { chip.isEmphasized = backgroundStyle == .emphasized }
+        }
+
+        override func layout() {
+            super.layout()
+            // Ширина по содержимому, но не шире колонки: чип — плашка вокруг
+            // текста, а растянутый на всю колонку выглядел бы кнопкой.
+            let width = min(chip.intrinsicWidth, bounds.width - 8)
+            chip.frame = NSRect(x: 4, y: 0, width: max(0, width), height: bounds.height)
+        }
+    }
+
     @MainActor
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSMenuDelegate {
         var model: BrowserModel
@@ -435,6 +485,16 @@ struct FileListView: NSViewRepresentable {
                   row < model.items.count
             else { return nil }
             let item = model.items[row]
+
+            // Ветка — чип, а не текст: серая строка неотличима от даты и
+            // размера, и глаз не отделяет состояние проекта от свойств файла.
+            if column == .branch {
+                let cell = tableView.makeView(withIdentifier: column.identifier, owner: self) as? BranchChipCell
+                    ?? BranchChipCell(identifier: column.identifier)
+                cell.branch = item.branch
+                cell.alphaValue = model.pane.isCut(item.url) ? 0.5 : 1.0
+                return cell
+            }
 
             // Переиспользуем ячейку: создание с нуля стоит 1.4 мс, а на экране их сорок.
             let cell = tableView.makeView(withIdentifier: column.identifier, owner: self) as? FileCell
@@ -822,6 +882,20 @@ struct FileListView: NSViewRepresentable {
             }
             menu.addItem(.separator())
 
+            // Кликнутый проект либо репозиторий текущей папки: стоя в
+            // ~/PhpstormProjects, которая репозиторием не является, правый клик
+            // по строке проекта обязан дать его операции — ради этого сценария
+            // всё и затевалось. В обычной папке вне репозитория пунктов нет:
+            // они были бы мёртвыми всегда и лишь удлиняли меню.
+            if let repository = menuRepository {
+                let busy = model.isBusy
+                // Заголовком — имя ветки: кликнутая строка и выделенная суть
+                // разные вещи, и без подписи Push уходил бы в проект, о котором
+                // человек не думал.
+                addBranchSubmenu(to: menu, repository: repository, busy: busy)
+                menu.addItem(.separator())
+            }
+
             let isFavorite = actions.isFavorite(folder)
             add(to: menu, .toggleFavorite, #selector(menuToggleFavorite),
                 title: isFavorite ? "Убрать из избранного" : "Добавить в избранное",
@@ -842,6 +916,93 @@ struct FileListView: NSViewRepresentable {
         /// описывает команды с постоянным идентификатором, а шаблоны — это
         /// данные, у которых своего CommandID нет. «Новая папка» остаётся
         /// командой реестра — у неё есть свой ⇧⌘N.
+        /// Операции репозитория одним пунктом с подменю.
+        ///
+        /// Свёрнуто, а не пять строк подряд: в этом меню их три десятка, и
+        /// плоский git-блок занимал бы в нём треть высоты, хотя нужен реже
+        /// «Копировать». Пункт назван именем ветки — так бывшая серая строка
+        /// заголовка не исчезла, а стала самим пунктом и по-прежнему отвечает,
+        /// к какому проекту относятся операции: кликнутая строка и выделенная
+        /// суть разные вещи.
+        private func addBranchSubmenu(to menu: NSMenu, repository: URL, busy: Bool) {
+            // Из уже посчитанного, а не с диска: чтение задержало бы появление
+            // меню, а на сетевом томе это те самые 13–21 мс, ради которых
+            // ветка там не читается вовсе. Источник выбирается по цели: строка
+            // годится, только когда репозиторий — она сама.
+            let known = repository == model.currentRepository?.root
+                ? model.currentRepository?.branch
+                : model.items.first { $0.url == repository }?.branch
+            let branch = known ?? GitRepository.branch(at: repository)
+
+            let submenu = NSMenu()
+            add(to: submenu, .gitPull, busy ? nil : #selector(menuGitPull))
+            add(to: submenu, .gitPush, busy ? nil : #selector(menuGitPush))
+            add(to: submenu, .gitSync, busy ? nil : #selector(menuGitSync))
+            add(to: submenu, .gitFetch, busy ? nil : #selector(menuGitFetch))
+            addBranches(to: submenu, repository: repository, busy: busy)
+            submenu.addItem(.separator())
+            add(to: submenu, .gitCopyBranch, #selector(menuGitCopyBranch))
+
+            // Без ветки — слово «Репозиторий»: отделённая голова и нечитаемый
+            // HEAD оставляют операции осмысленными, и пункт без названия был бы
+            // хуже пункта с общим.
+            let parent = NSMenuItem(title: branch ?? "Репозиторий", action: nil, keyEquivalent: "")
+            parent.submenu = submenu
+            parent.image = MenuIcon.symbol(
+                branch.map { GitRepository.isDetached($0) } == true
+                    ? "point.3.connected.trianglepath.dotted"
+                    : "point.topleft.down.to.point.bottomright.curvepath"
+            )
+            menu.addItem(parent)
+        }
+
+        /// Недавние ветки и вход в полный список.
+        ///
+        /// Пять, а не все: в рабочем репозитории их бывает семьдесят, и
+        /// вывались бы они целиком — подменю ушло бы за край экрана.
+        /// Локальные, потому что серверная требует создания ветки, и в общем
+        /// списке без пояснения это выглядело бы обычным переходом.
+        private func addBranches(to menu: NSMenu, repository: URL, busy: Bool) {
+            // На сетевом томе не читаем вовсе: чтение синхронное, и git там
+            // отвечает сотнями миллисекунд, а на отвалившемся сервере может не
+            // ответить вовсе — меню не открылось бы до истечения таймаута SMB.
+            // Та же причина, по которой ветка не читается для колонки.
+            guard BrowserModel.isOnLocalVolume(repository) else { return }
+
+            let branches = BranchReader.branches(at: repository)
+            guard !branches.isEmpty else { return }
+
+            menu.addItem(.separator())
+            let header = NSMenuItem(title: "Недавние ветки", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            menu.addItem(header)
+
+            for branch in branches.filter({ !$0.isRemote }).prefix(5) {
+                let item = NSMenuItem(
+                    title: branch.name,
+                    // На текущей ветке пункт мёртв: git переключение на себя
+                    // пропустит молча, но живой пункт, который ничего не
+                    // делает, выглядит сломанным.
+                    action: busy || branch.isCurrent ? nil : #selector(menuSwitchBranch(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = branch
+                // Галочка, а не выделение цветом: нативный способ macOS
+                // показать выбранное среди равных.
+                item.state = branch.isCurrent ? .on : .off
+                menu.addItem(item)
+            }
+
+            let all = NSMenuItem(
+                title: "Все ветки…",
+                action: busy ? nil : #selector(menuAllBranches),
+                keyEquivalent: ""
+            )
+            all.target = self
+            menu.addItem(all)
+        }
+
         private func addCreateSubmenu(to menu: NSMenu) {
             let submenu = NSMenu()
             add(to: submenu, .newFolder, #selector(menuNewFolder), title: "Папка")
@@ -948,6 +1109,44 @@ struct FileListView: NSViewRepresentable {
                 return selected
             }
             return [item]
+        }
+
+        /// Репозиторий, к которому относятся git-пункты меню.
+        ///
+        /// Кликнутая папка важнее текущей: в списке проектов правый клик по
+        /// строке должен работать именно с ней. Внутри репозитория клик по
+        /// файлу цели не меняет — операция затрагивает репозиторий целиком.
+        private var menuRepository: URL? {
+            // Спрашиваем файловую систему, а не смотрим на item.branch: ветка
+            // заполняется вторым проходом загрузки, и до его конца пункты
+            // пропадали бы из меню, появляясь через секунду сами собой. На
+            // сетевом томе ветка не читается вовсе — там они не появились бы
+            // никогда, то есть ровно в том сценарии, ради которого всё и
+            // затевалось. Проверка дешёвая: одно обращение по уже известному
+            // пути, тем же приёмом, что и в BrowserModel.gitTarget.
+            if let item = clickedItem, item.isDirectory, GitRepository.isRepository(item.url) {
+                return item.url
+            }
+            return model.currentRepository?.root
+        }
+
+        // Цель передаётся явно, а не берётся из выделения: правый клик по
+        // невыделенной строке действует на неё — нативное поведение macOS, — и
+        // без этого операция ушла бы в выделенный проект, то есть не в тот, по
+        // которому кликнули. Само выделение при этом не трогается.
+        @objc private func menuGitFetch() { model.gitFetch(at: menuRepository) }
+        @objc private func menuGitPull() { model.gitPull(at: menuRepository) }
+        @objc private func menuGitPush() { model.gitPush(at: menuRepository) }
+        @objc private func menuGitSync() { model.gitSync(at: menuRepository) }
+        @objc private func menuGitCopyBranch() { model.gitCopyBranch(at: menuRepository) }
+
+        @objc private func menuSwitchBranch(_ sender: NSMenuItem) {
+            guard let branch = sender.representedObject as? Branch else { return }
+            model.gitSwitch(to: branch, at: menuRepository)
+        }
+
+        @objc private func menuAllBranches() {
+            appState.pendingBranchSwitch = menuRepository
         }
 
         @objc private func menuCompress() {

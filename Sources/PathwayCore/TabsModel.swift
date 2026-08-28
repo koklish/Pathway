@@ -28,9 +28,10 @@ public final class TabState: Identifiable {
         showHiddenFiles: Bool,
         sort: SortSettings,
         watcher: any DirectoryWatching,
+        git: GitService,
         isPinned: Bool = false
     ) {
-        browser = BrowserModel(path: path, watcher: watcher)
+        browser = BrowserModel(path: path, watcher: watcher, git: git)
         browser.showHiddenFiles = showHiddenFiles
         // Сортировка задаётся до первой загрузки: выставленная после, она
         // заставила бы список перестроиться сразу после появления.
@@ -105,15 +106,18 @@ public final class TabsModel {
     /// общий наблюдатель следил бы за одной папкой на всех, и переключение
     /// вкладок сбивало бы слежение фоновым.
     private let makeWatcher: () -> any DirectoryWatching
+    private let git: GitService
 
     public init(
         path: URL = FileManager.default.homeDirectoryForCurrentUser,
         store: TabsStore = TabsStore(),
-        makeWatcher: @escaping () -> any DirectoryWatching = { DirectoryWatcher() }
+        makeWatcher: @escaping () -> any DirectoryWatching = { DirectoryWatcher() },
+        git: GitService = GitService()
     ) {
         self.store = store
         self.fallback = path
         self.makeWatcher = makeWatcher
+        self.git = git
 
         // Значение раздаётся вкладкам параметром конструктора, а не через
         // didSet: на этапе инициализации tabs ещё пуст, раздавать некому, — а
@@ -129,6 +133,7 @@ public final class TabsModel {
                 showHiddenFiles: false,
                 sort: restoredSort,
                 watcher: makeWatcher(),
+                git: git,
                 isPinned: $0.isPinned
             )
         }
@@ -214,7 +219,8 @@ public final class TabsModel {
             path: url,
             showHiddenFiles: showHiddenFiles,
             sort: sort,
-            watcher: makeWatcher()
+            watcher: makeWatcher(),
+            git: git
         )
         watch(tab)
         // Справа от активной, но не внутрь закреплённой группы: открытая из

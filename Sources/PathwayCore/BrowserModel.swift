@@ -37,6 +37,14 @@ public final class BrowserModel {
     /// true, пока идёт чтение папки — для индикатора в интерфейсе.
     public private(set) var isLoading = false
 
+    /// Репозиторий, внутри которого находится текущая папка; nil — снаружи.
+    ///
+    /// Отвечает на «где сейчас я», в отличие от колонки «Ветка», отвечающей
+    /// на «какая ветка у каждой из этих папок». Поэтому и живёт отдельно от
+    /// items: во вложенной папке репозитория строк с веткой может не быть
+    /// вовсе, а индикатор обязан её показывать.
+    public private(set) var currentRepository: RepositoryState?
+
     /// Файл, к которому таблица должна прокрутиться. Обратный канал «Core
     /// просит UI»: прокрутка принадлежит NSScrollView, из модели её не сделать.
     /// Вью сбрасывает поле, выполнив запрос.
@@ -86,6 +94,8 @@ public final class BrowserModel {
     /// иначе медленный сетевой ответ перезапишет уже открытую папку.
     private var loadTask: Task<Void, Never>?
     private let watcher: any DirectoryWatching
+    private let git: GitService
+    private var repositoryTask: Task<Void, Never>?
     /// Обновление по событию от файловой системы. Отдельная задача, а не loadTask:
     /// отмена чтения при закрытии вкладки не должна зависеть от того, пришло ли
     /// событие, и наоборот.
@@ -96,11 +106,13 @@ public final class BrowserModel {
     public init(
         path: URL,
         pasteboard: PasteboardService = PasteboardService(),
-        watcher: any DirectoryWatching = DirectoryWatcher()
+        watcher: any DirectoryWatching = DirectoryWatcher(),
+        git: GitService = GitService()
     ) {
         self.pane = PaneState(path: path)
         self.pasteboard = pasteboard
         self.watcher = watcher
+        self.git = git
     }
 
     public var breadcrumbs: [Breadcrumb] {
@@ -187,12 +199,21 @@ public final class BrowserModel {
         // Синхронно, до первого await: иначе команды записи успели бы
         // побывать доступными на томе, который их не примет.
         isReadOnlyVolume = Self.isReadOnly(directory)
+        // Один раз на папку, а не на строку: это свойство тома, и запрос на
+        // каждую запись был бы тем самым сетевым обращением, которого
+        // проверка и позволяет избежать.
+        let isLocal = Self.isOnLocalVolume(directory)
 
         // Уже открытую папку показываем сразу, не дожидаясь диска.
         if let cached = cache.items(for: directory, showHidden: showHidden) {
             items = sorted(cached)
         }
         let hadCache = !items.isEmpty && cache.items(for: directory, showHidden: showHidden) != nil
+
+        // Отдельной задачей от загрузки списка: git status на большом
+        // репозитории стоит сотни миллисекунд, и ожидание его задержало бы
+        // отрисовку файлов ради справочной строки.
+        refreshRepositoryInBackground()
 
         loadTask?.cancel()
         loadTask = Task { [loader] in
@@ -210,7 +231,7 @@ public final class BrowserModel {
 
                 // Метаданные добираем следом: список уже виден и кликабелен.
                 let detailed = await Task.detached(priority: .utility) {
-                    loader.loadMetadata(for: names)
+                    loader.loadMetadata(for: names, isLocalVolume: isLocal)
                 }.value
 
                 guard !Task.isCancelled, pane.path == directory else { return }
@@ -332,10 +353,11 @@ public final class BrowserModel {
     /// Второй проход: размеры и даты для записей, попавших в список без них.
     private func loadMetadataAfterMerge(in directory: URL, showHidden: Bool) {
         let pending = items
+        let isLocal = Self.isOnLocalVolume(directory)
         metadataTask?.cancel()
         metadataTask = Task { [loader] in
             let detailed = await Task.detached(priority: .utility) {
-                loader.loadMetadata(for: pending)
+                loader.loadMetadata(for: pending, isLocalVolume: isLocal)
             }.value
 
             guard !Task.isCancelled, pane.path == directory else { return }
@@ -502,11 +524,30 @@ public final class BrowserModel {
                 // до прихода метаданных показывал бы обратный порядок.
                 return sortKey == "name" && !sortAscending ? !byName : byName
             }
+            // Ветка — до общей инверсии направления: папки без неё обязаны
+            // остаться внизу в обе стороны. Смысл сортировки по ветке в том,
+            // чтобы сгруппировать проекты, а всплывшие наверх полэкрана пустых
+            // строк отодвинули бы их за край экрана.
+            if sortKey == "branch", (a.branch == nil) != (b.branch == nil) {
+                return a.branch != nil
+            }
+
             let result: Bool
             switch sortKey {
             case "size": result = a.size < b.size
             case "modified": result = (a.modificationDate ?? .distantPast) < (b.modificationDate ?? .distantPast)
             case "kind": result = a.url.pathExtension.localizedStandardCompare(b.url.pathExtension) == .orderedAscending
+            case "branch":
+                // При равных ветках — по имени, в отличие от прочих колонок.
+                // Смысл этой сортировки в группировке: половина проектов стоит
+                // на main, и без разрешения ничьей они выстроились бы в порядке
+                // выдачи readdir, то есть случайно на глаз.
+                let left = a.branch ?? ""
+                let right = b.branch ?? ""
+                if left == right {
+                    return a.name.localizedStandardCompare(b.name) == .orderedAscending
+                }
+                result = left.localizedStandardCompare(right) == .orderedAscending
             default: result = a.name.localizedStandardCompare(b.name) == .orderedAscending
             }
             return sortAscending ? result : !result
@@ -522,6 +563,13 @@ public final class BrowserModel {
             return date.formatted(date: .abbreviated, time: .shortened)
         case "kind":
             return Self.kindLabel(for: item)
+        case "branch":
+            // Пусто, а не «—»: прочерк читался бы как «ветка есть, но неизвестна»,
+            // тогда как папка просто не репозиторий.
+            //
+            // Колонку рисует чип, а не этот текст: он остаётся текстовым
+            // представлением ветки для всего, что работает со строками.
+            return item.branch ?? ""
         default:
             return item.name
         }
@@ -531,6 +579,153 @@ public final class BrowserModel {
         if item.isDirectory { return "Папка" }
         let ext = item.url.pathExtension
         return ext.isEmpty ? "Документ" : ext.uppercased()
+    }
+
+    // MARK: - Git
+
+    /// Перечитывает состояние репозитория текущей папки.
+    public func refreshRepository() async {
+        refreshRepositoryInBackground()
+        await repositoryTask?.value
+    }
+
+    private func refreshRepositoryInBackground() {
+        let directory = pane.path
+
+        repositoryTask?.cancel()
+        repositoryTask = Task { [git] in
+            // Поиск корня — обращения к диску вверх по пути, поэтому вне
+            // главного потока: на сетевом томе они не мгновенны.
+            let root = await Task.detached(priority: .utility) {
+                GitRepository.root(containing: directory)
+            }.value
+
+            // Обе защиты, как и в reloadAsync: они не дублируют друг друга.
+            // Отмена кооперативна и уже запущенный Task.detached её не видит —
+            // отсюда проверка пути; но при обновлении той же папки (а его зовёт
+            // каждый fetch/pull/push) путь совпадает, и отменённая задача
+            // перезаписала бы результат более свежей.
+            guard !Task.isCancelled, pane.path == directory else { return }
+            guard let root else {
+                currentRepository = nil
+                return
+            }
+
+            // Ветка из HEAD доступна сразу, счётчики — только после git status.
+            // Показываем ветку не дожидаясь сети: на медленном сервере иначе
+            // индикатор пустовал бы секундами.
+            currentRepository = RepositoryState(root: root, branch: GitRepository.branch(at: root))
+
+            let status = try? await git.status(at: root)
+            guard !Task.isCancelled, pane.path == directory, let status else { return }
+            currentRepository = RepositoryState(
+                root: root,
+                branch: status.branch ?? GitRepository.branch(at: root),
+                ahead: status.ahead,
+                behind: status.behind,
+                isDirty: status.isDirty
+            )
+        }
+    }
+
+    // Необязательная цель — для контекстного меню списка: правый клик по
+    // невыделенной строке действует на неё, и без явной цели операция ушла бы
+    // в выделенный проект, то есть не туда, по чему человек кликнул. Без
+    // аргумента цель прежняя, из gitTarget.
+    public func gitFetch(at repository: URL? = nil) {
+        runGit(title: "Получение изменений…", at: repository) { [git] root in try await git.fetch(at: root) }
+    }
+
+    public func gitPull(at repository: URL? = nil) {
+        runGit(title: "Загрузка изменений…", at: repository) { [git] root in try await git.pull(at: root) }
+    }
+
+    public func gitPush(at repository: URL? = nil) {
+        runGit(title: "Отправка изменений…", at: repository) { [git] root in try await git.push(at: root) }
+    }
+
+    public func gitSync(at repository: URL? = nil) {
+        runGit(title: "Синхронизация…", at: repository) { [git] root in try await git.sync(at: root) }
+    }
+
+    /// Кладёт в буфер имя ветки того репозитория, над которым работают команды.
+    ///
+    /// Имя, а не путь: строку вставляют в терминал или в описание задачи, и
+    /// путь там не нужен. Буфер чистится внутри writeText — иначе URL от
+    /// прошлого «Копировать» пережили бы запись, и «Вставить» скопировала бы
+    /// сам файл.
+    /// Читает список веток репозитория для меню и формы выбора.
+    ///
+    /// Возвращает результат, а не пишет в свойство: список нужен ровно на
+    /// время показа меню, и хранимое свойство пришлось бы чистить при каждой
+    /// смене папки, чтобы не показать ветки чужого проекта.
+    public func gitBranches(at repository: URL? = nil) async -> [Branch] {
+        guard let root = repository ?? gitTarget else { return [] }
+        return (try? await git.branches(at: root)) ?? []
+    }
+
+    /// Переключает ветку и перечитывает папку.
+    ///
+    /// Перечитывает обязательно: смена ветки меняет не только имя в чипе, но и
+    /// содержимое рабочего дерева — без обновления список показывал бы файлы
+    /// прежней ветки.
+    public func gitSwitch(to branch: Branch, at repository: URL? = nil) {
+        runGit(title: "Переключение на \(branch.name)…", at: repository) { [git] root in
+            if branch.isRemote {
+                try await git.switchToRemote(branch.name, at: root)
+            } else {
+                try await git.switchBranch(to: branch.name, at: root)
+            }
+            await MainActor.run { self.reloadAsync() }
+        }
+    }
+
+    public func gitCopyBranch(at repository: URL? = nil) {
+        guard let root = repository ?? gitTarget,
+              let branch = GitRepository.branch(at: root) else { return }
+        pasteboard.writeText(branch)
+    }
+
+    /// Клонирует репозиторий в текущую папку.
+    public func gitClone(from url: String, name: String) {
+        let destination = pane.path
+        startOperation(title: "Клонирование…") { [git] _ in
+            try await git.clone(from: url, into: destination, name: name)
+        }
+    }
+
+    /// Репозиторий, над которым сработает операция.
+    ///
+    /// Репозиторий текущей папки имеет приоритет над выделенным: индикатор в
+    /// адресной строке показывает именно его, и выделение вложенного проекта
+    /// увело бы push не туда, куда человек смотрит.
+    ///
+    /// Выделенная папка нужна для главного сценария — стоя в папке с проектами,
+    /// которая репозиторием не является, выбрать проект и обновить его. Без
+    /// этой ветки все операции были бы там мертвы.
+    public var gitTarget: URL? {
+        if let root = currentRepository?.root { return root }
+        let folder = commandFolder
+        // Проверка дешёвая: одно обращение к уже показанной строке, обхода
+        // вверх по пути здесь нет.
+        return folder != pane.path && GitRepository.isRepository(folder) ? folder : nil
+    }
+
+    /// Выполняет операцию в корне репозитория.
+    ///
+    /// Именно в корне, а не в текущей папке: git работал бы и из вложенной,
+    /// но клонирование и будущие пофайловые операции требуют явного корня,
+    /// и один способ вычисления цели надёжнее двух.
+    private func runGit(
+        title: String,
+        at repository: URL? = nil,
+        _ body: @escaping (URL) async throws -> Void
+    ) {
+        guard let root = repository ?? gitTarget else { return }
+        startOperation(title: title) { _ in
+            try await body(root)
+            await MainActor.run { self.refreshRepositoryInBackground() }
+        }
     }
 
     // MARK: - Файловые операции
@@ -671,7 +866,9 @@ public final class BrowserModel {
     /// Лежит ли объект на местном томе. Неопределённость считаем местной:
     /// тогда пойдём через Корзину, и ошибка покажет настоящую причину,
     /// а необратимого удаления по ложному срабатыванию не случится.
-    private static func isOnLocalVolume(_ url: URL) -> Bool {
+    /// public: то же решение нужно контекстному меню — синхронное чтение
+    /// веток на сетевом томе заблокировало бы главный поток до ответа сервера.
+    public nonisolated static func isOnLocalVolume(_ url: URL) -> Bool {
         (try? url.resourceValues(forKeys: [.volumeIsLocalKey]))?.volumeIsLocal ?? true
     }
 

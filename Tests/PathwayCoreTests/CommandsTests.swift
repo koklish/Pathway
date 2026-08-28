@@ -85,8 +85,12 @@ struct CommandsTests {
             // выделен один файл, а ей нужно два — она гасла бы и без
             // read-only, и в дифф не попадает. Её доступность проверяется
             // отдельно в BatchRenameTests.
+            //
+            // gitFetch, gitPull и gitSync — по той же причине: временная
+            // папка не репозиторий, и они выключены до read-only. Гашение
+            // на томе только для чтения проверяется в BrowserGitTests.
             #expect(Set(enabledBefore).subtracting(enabledAfter)
-                    == CommandRegistry.writesToDisk.subtracting([.batchRename]))
+                    == CommandRegistry.writesToDisk.subtracting([.batchRename, .gitFetch, .gitPull, .gitSync]))
         }
     }
 
