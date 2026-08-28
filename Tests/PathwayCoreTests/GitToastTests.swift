@@ -30,6 +30,16 @@ private func status(ahead: Int, behind: Int) -> GitResult {
     GitResult(output: "# branch.head main\n# branch.ab +\(ahead) -\(behind)\n", error: "", status: 0)
 }
 
+/// Сдвиг HEAD на `count` коммитов: разные ревизии до и после плюс ответ
+/// rev-list. Именно так модель узнаёт, сколько реально пришло.
+private func arrived(_ count: Int, on git: ScriptedGit) {
+    git.responses["rev-parse"] = [
+        GitResult(output: "aaaa111\n", error: "", status: 0),
+        GitResult(output: "bbbb222\n", error: "", status: 0),
+    ]
+    git.responses["rev-list"] = [GitResult(output: "\(count)\n", error: "", status: 0)]
+}
+
 @Suite("Тосты git-операций")
 @MainActor
 struct GitToastTests {
@@ -95,6 +105,7 @@ struct GitToastTests {
                 status(ahead: 0, behind: 3),
                 status(ahead: 0, behind: 0),
             ]
+            arrived(3, on: git)
 
             let model = BrowserModel(path: repo, git: GitService(git: git))
             await model.refreshRepository()
@@ -154,6 +165,7 @@ struct GitToastTests {
                 status(ahead: 2, behind: 3),
                 status(ahead: 0, behind: 0),
             ]
+            arrived(3, on: git)
 
             let model = BrowserModel(path: repo, git: GitService(git: git))
             await model.refreshRepository()
@@ -242,6 +254,7 @@ struct GitToastTests {
                                        (5, "Загружено 5 коммитов"), (11, "Загружено 11 коммитов")] {
                 let git = ScriptedGit()
                 git.responses["status"] = [status(ahead: 0, behind: behind)]
+                arrived(behind, on: git)
                 let model = BrowserModel(path: repo, git: GitService(git: git))
                 await model.refreshRepository()
 
@@ -321,6 +334,54 @@ struct GitToastTests {
             model.toast = Toast(.success, "Уже актуально")
             try await Task.sleep(for: .milliseconds(600))
             #expect(model.toast != nil)
+        }
+    }
+
+    @Test("fetch сообщает об отставании, даже когда refs обновил кто-то раньше")
+    func fetchReportsBehindEvenWhenRefsAlreadyFresh() async throws {
+        try await withTempDirAsync { dir in
+            let repo = try makeRepo(in: dir)
+            let git = ScriptedGit()
+            // Отставание на два коммита есть и до, и после операции: refs уже
+            // обновил кто-то другой — фоновый fetch среды разработки, терминал
+            // или предыдущий Fetch из самого Проводника.
+            git.responses["status"] = [status(ahead: 0, behind: 2)]
+
+            let model = BrowserModel(path: repo, git: GitService(git: git))
+            await model.refreshRepository()
+
+            model.gitFetch()
+            await model.waitForOperation()
+
+            // Человек, нажавший Fetch, спрашивает «есть ли что забирать», а не
+            // «сколько притащил именно этот запрос». Прирост здесь нулевой, и
+            // ответ по нему был бы «Нового нет» — прямо перед pull, который
+            // принесёт два коммита.
+            #expect(model.toast?.text == "На сервере 2 новых коммита")
+        }
+    }
+
+    @Test("pull считает пришедшее по HEAD, а не по устаревшему счётчику")
+    func pullCountsArrivedCommitsNotStaleCounter() async throws {
+        try await withTempDirAsync { dir in
+            let repo = try makeRepo(in: dir)
+            let git = ScriptedGit()
+            // Счётчик до операции говорит «всё актуально»: refs устарели, и
+            // git ещё не знает о чужих коммитах — узнает он о них внутри
+            // самого pull, который начинается с fetch.
+            git.responses["status"] = [status(ahead: 0, behind: 0)]
+            // HEAD сместился на два коммита — столько и пришло на самом деле.
+            arrived(2, on: git)
+
+            let model = BrowserModel(path: repo, git: GitService(git: git))
+            await model.refreshRepository()
+
+            model.gitPull()
+            await model.waitForOperation()
+
+            // По счётчику вышло бы «Уже актуально» — прямо про операцию,
+            // которая только что принесла две чужих правки.
+            #expect(model.toast?.text == "Загружено 2 коммита")
         }
     }
 }

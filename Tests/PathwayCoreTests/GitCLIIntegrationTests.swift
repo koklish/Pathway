@@ -159,4 +159,99 @@ struct GitCLIIntegrationTests {
             await #expect(throws: CancellationError.self) { try await task.value }
         }
     }
+
+    /// Сервер и клиент: голый репозиторий и два рабочих дерева при нём.
+    /// Нужны, чтобы проверить fetch и pull по-настоящему — с обменом.
+    private func makeServerAndClient(at dir: URL) async throws -> (server: URL, author: URL, client: URL) {
+        let git = GitCLI()
+        let server = dir.appendingPathComponent("server.git")
+        try FileManager.default.createDirectory(at: server, withIntermediateDirectories: true)
+        _ = try await git.run(["init", "-q", "--bare", "-b", "main"], in: server)
+
+        let author = dir.appendingPathComponent("author")
+        _ = try await git.run(["clone", "-q", server.path, author.path], in: dir)
+        _ = try await git.run(["config", "user.email", "тест@pathway"], in: author)
+        _ = try await git.run(["config", "user.name", "Тест"], in: author)
+        try "первый".write(to: author.appendingPathComponent("файл.txt"), atomically: true, encoding: .utf8)
+        _ = try await git.run(["add", "."], in: author)
+        _ = try await git.run(["commit", "-q", "-m", "Первый"], in: author)
+        _ = try await git.run(["push", "-q", "-u", "origin", "main"], in: author)
+
+        let client = dir.appendingPathComponent("client")
+        _ = try await git.run(["clone", "-q", server.path, client.path], in: dir)
+        return (server, author, client)
+    }
+
+    /// Добавляет коммит в авторское дерево и отправляет его на сервер.
+    private func publish(_ text: String, from author: URL) async throws {
+        let git = GitCLI()
+        let file = author.appendingPathComponent("файл.txt")
+        let existing = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+        try (existing + "\n" + text).write(to: file, atomically: true, encoding: .utf8)
+        _ = try await git.run(["commit", "-qam", text], in: author)
+        _ = try await git.run(["push", "-q"], in: author)
+    }
+
+    @Test("после fetch отставание видно, даже когда refs обновил кто-то раньше")
+    func fetchSeesBehindAfterSomeoneElseFetched() async throws {
+        try await withTempDirAsync { dir in
+            let repos = try await makeServerAndClient(at: dir)
+            let service = GitService()
+            try await publish("второй", from: repos.author)
+            try await publish("третий", from: repos.author)
+
+            // Refs обновляет посторонний — среда разработки или терминал.
+            try await service.fetch(at: repos.client)
+            // Теперь наш Fetch: прироста он не даёт, refs уже свежие.
+            try await service.fetch(at: repos.client)
+            let after = try await service.status(at: repos.client)
+
+            // Ровно случай, из-за которого тост говорил «Нового нет» перед
+            // pull, приносившим два коммита.
+            #expect(after.behind == 2)
+        }
+    }
+
+    @Test("pull приносит коммиты, о которых счётчик до операции не знал")
+    func pullBringsCommitsStaleCounterMissed() async throws {
+        try await withTempDirAsync { dir in
+            let repos = try await makeServerAndClient(at: dir)
+            let service = GitService()
+            try await publish("второй", from: repos.author)
+            try await publish("третий", from: repos.author)
+
+            // Клиент о чужих коммитах ещё не слышал: fetch никто не делал.
+            let before = try await service.status(at: repos.client)
+            #expect(before.behind == 0)
+
+            let oldHead = try await service.head(at: repos.client)
+            try await service.pull(at: repos.client)
+            let newHead = try await service.head(at: repos.client)
+
+            // Счётчик до операции показал ноль, а пришло два: pull сам
+            // начинается с fetch. Отсюда подсчёт по HEAD, а не по счётчику.
+            let arrived = try await service.commitCount(from: oldHead!, to: newHead!, at: repos.client)
+            #expect(arrived == 2)
+        }
+    }
+
+    @Test("отправленное считается по счётчику «впереди»: сеть для него не нужна")
+    func pushCountsFromLocalAheadCounter() async throws {
+        try await withTempDirAsync { dir in
+            let repos = try await makeServerAndClient(at: dir)
+            let git = GitCLI()
+            _ = try await git.run(["config", "user.email", "тест@pathway"], in: repos.client)
+            _ = try await git.run(["config", "user.name", "Тест"], in: repos.client)
+            try "моё".write(to: repos.client.appendingPathComponent("моё.txt"), atomically: true, encoding: .utf8)
+            _ = try await git.run(["add", "."], in: repos.client)
+            _ = try await git.run(["commit", "-q", "-m", "Моё"], in: repos.client)
+
+            let service = GitService()
+            let before = try await service.status(at: repos.client)
+
+            // Локальные коммиты git знает без обращения к серверу, и устареть
+            // этот счётчик не может — в отличие от «позади».
+            #expect(before.ahead == 1)
+        }
+    }
 }

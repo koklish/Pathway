@@ -96,3 +96,25 @@ public struct Toast: Identifiable, Equatable, Sendable {
         self.text = text
     }
 }
+
+/// Итог git-операции — всё, из чего складывается текст тоста.
+///
+/// Тип, а не три аргумента замыкания: их уже три, и четвёртый превратил бы
+/// вызовы в ряд безымянных значений, где before и after различимы лишь порядком.
+public struct GitOperationResult: Sendable {
+    /// Состояние до операции. У push отсюда берётся число отправленного:
+    /// локальные коммиты git знает без сети, и устареть этот счётчик не может.
+    public let before: GitStatus?
+    /// Состояние после. У fetch отсюда берётся отставание: refs к этому моменту
+    /// уже свежие, а прирост за вызов ничего не сказал бы, обнови их кто-то
+    /// раньше.
+    public let after: GitStatus?
+    /// Сколько коммитов легло в рабочее дерево за операцию — по разнице HEAD.
+    public let arrived: Int
+
+    public init(before: GitStatus?, after: GitStatus?, arrived: Int) {
+        self.before = before
+        self.after = after
+        self.arrived = arrived
+    }
+}

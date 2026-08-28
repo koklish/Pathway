@@ -657,12 +657,15 @@ public final class BrowserModel {
         runGit(title: "Получение изменений…", failure: "Не удалось получить изменения", at: repository) {
             [git] root in
             try await git.fetch(at: root)
-        } toast: { before, after in
-            let arrived = (after?.behind ?? 0) - (before?.behind ?? 0)
-            // Именно прирост, а не итоговое «позади»: человек уже мог быть на
-            // десять коммитов позади и без этого fetch, и цифра 10 сказала бы
-            // о состоянии, а не о том, что запрос принёс.
-            return arrived > 0 ? "На сервере \(Self.plural(arrived, "новый коммит", "новых коммита", "новых коммитов"))" : "Нового нет"
+        } toast: { result in
+            // Итоговое отставание, а не прирост за этот запрос. Прирост врёт,
+            // когда refs успел обновить кто-то другой — фоновый fetch среды
+            // разработки, терминал или предыдущий Fetch отсюда же: разница
+            // выходит нулевой, и тост говорит «Нового нет» прямо перед pull,
+            // который принесёт коммиты. Спрашивают ведь «есть ли что
+            // забирать», а не «сколько притащил именно этот вызов».
+            let behind = result.after?.behind ?? 0
+            return behind > 0 ? "На сервере \(Self.plural(behind, "новый коммит", "новых коммита", "новых коммитов"))" : "Нового нет"
         }
     }
 
@@ -670,10 +673,11 @@ public final class BrowserModel {
         runGit(title: "Загрузка изменений…", failure: "Не удалось загрузить изменения", at: repository) {
             [git] root in
             try await git.pull(at: root)
-        } toast: { before, _ in
-            // Сколько было позади до операции — столько и загрузилось: pull
-            // идёт --ff-only, и частичного результата у него не бывает.
-            let loaded = before?.behind ?? 0
+        } toast: { result in
+            // По разнице HEAD, а не по счётчику «позади» до операции: тот
+            // показал бы ноль, когда refs устарели, — и «Уже актуально»
+            // появилось бы прямо про pull, принёсший чужие правки.
+            let loaded = result.arrived
             return loaded > 0 ? "Загружено \(Self.plural(loaded, "коммит", "коммита", "коммитов"))" : "Уже актуально"
         }
     }
@@ -682,8 +686,10 @@ public final class BrowserModel {
         runGit(title: "Отправка изменений…", failure: "Не удалось отправить изменения", at: repository) {
             [git] root in
             try await git.push(at: root)
-        } toast: { before, _ in
-            let sent = before?.ahead ?? 0
+        } toast: { result in
+            // Из состояния до операции: локальные коммиты git знает без сети,
+            // и в отличие от «позади» этот счётчик устареть не может.
+            let sent = result.before?.ahead ?? 0
             return sent > 0 ? "Отправлено \(Self.plural(sent, "коммит", "коммита", "коммитов"))" : "Нечего отправлять"
         }
     }
@@ -692,11 +698,13 @@ public final class BrowserModel {
         runGit(title: "Синхронизация…", failure: "Не удалось синхронизировать", at: repository) {
             [git] root in
             try await git.sync(at: root)
-        } toast: { before, _ in
+        } toast: { result in
             // Обе половины в одной строке: sync — одна операция, и два тоста
             // подряд вытеснили бы друг друга, показав только второй.
-            let loaded = before?.behind ?? 0
-            let sent = before?.ahead ?? 0
+            // Пришедшее — по HEAD, отправленное — по счётчику до операции: у
+            // каждой половины свой надёжный источник.
+            let loaded = result.arrived
+            let sent = result.before?.ahead ?? 0
             switch (loaded, sent) {
             case (0, 0): return "Уже актуально"
             case (0, _): return "Отправлено \(Self.plural(sent, "коммит", "коммита", "коммитов"))"
@@ -739,7 +747,7 @@ public final class BrowserModel {
                 try await git.switchBranch(to: branch.name, at: root)
             }
             await MainActor.run { self.reloadAsync() }
-        } toast: { _, _ in
+        } toast: { _ in
             "Ветка \(branch.name)"
         }
     }
@@ -784,28 +792,39 @@ public final class BrowserModel {
     /// но клонирование и будущие пофайловые операции требуют явного корня,
     /// и один способ вычисления цели надёжнее двух.
     ///
-    /// `toast` получает состояние репозитория до и после операции и возвращает
-    /// текст успеха. Состояние, а не вывод git: «Everything up-to-date» и
-    /// «Receiving objects» — английские строки без гарантий формата, а разница
-    /// счётчиков даёт то же самое числом и не зависит от версии git.
+    /// `toast` получает итог операции и возвращает текст успеха. Данными, а не
+    /// выводом git: «Everything up-to-date» и «Receiving objects» — английские
+    /// строки без гарантий формата, и разбор по ним ломался бы от версии.
     private func runGit(
         title: String,
         failure: String,
         at repository: URL? = nil,
         _ body: @escaping (URL) async throws -> Void,
-        toast: @escaping (GitStatus?, GitStatus?) -> String
+        toast: @escaping (GitOperationResult) -> String
     ) {
         guard let root = repository ?? gitTarget else { return }
-        // Снимок до операции: после неё прежние счётчики взять уже неоткуда.
-        // Читается тем же git.status, что и индикатор, а не из
-        // currentRepository: операция могла уйти в кликнутый проект, а там
-        // индикатор показывает не его.
+        // Снимки читаются тем же git.status, что и индикатор, но по корню
+        // операции, а не из currentRepository: операция могла уйти в
+        // кликнутый проект, а там индикатор показывает не его.
         startOperation(title: title, reportsErrorAsToast: failure) { [git] _ in
             let before = try? await git.status(at: root)
+            let oldHead = try? await git.head(at: root)
             try await body(root)
             let after = try? await git.status(at: root)
+            let newHead = try? await git.head(at: root)
+
+            // Сколько коммитов реально легло в рабочее дерево. Считается по
+            // HEAD, потому что счётчик «позади» к началу операции мог быть
+            // любым: pull сам начинается с fetch и узнаёт о чужих коммитах
+            // уже внутри себя.
+            var arrived = 0
+            if let oldHead, let newHead {
+                arrived = (try? await git.commitCount(from: oldHead, to: newHead, at: root)) ?? 0
+            }
+            let result = GitOperationResult(before: before, after: after, arrived: arrived)
+
             await MainActor.run {
-                self.toast = Toast(.success, toast(before, after))
+                self.toast = Toast(.success, toast(result))
                 self.refreshRepositoryInBackground()
             }
         }

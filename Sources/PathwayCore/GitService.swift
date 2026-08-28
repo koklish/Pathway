@@ -50,6 +50,28 @@ public struct GitService: Sendable {
         try await push(at: repository)
     }
 
+    /// Коммит, на котором стоит рабочее дерево; nil — прочитать не удалось.
+    ///
+    /// Нужен, чтобы посчитать реально пришедшее: счётчик «позади» из status
+    /// врёт, когда refs устарели, — а pull начинается с fetch и узнаёт о чужих
+    /// коммитах уже внутри себя.
+    public func head(at repository: URL) async throws -> String? {
+        let result = try await run(["rev-parse", "HEAD"], in: repository)
+        let value = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    /// Сколько коммитов добавилось между двумя ревизиями.
+    ///
+    /// Именно rev-list, а не разница счётчиков: он отвечает на вопрос «что
+    /// пришло за эту операцию» точно, независимо от того, насколько свежими
+    /// были refs к её началу.
+    public func commitCount(from oldHead: String, to newHead: String, at repository: URL) async throws -> Int {
+        guard oldHead != newHead else { return 0 }
+        let result = try await run(["rev-list", "--count", "\(oldHead)..\(newHead)"], in: repository)
+        return Int(result.output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
     /// Список веток репозитория, свежие первыми.
     ///
     /// Читается по требованию, без кэша: 75 веток настоящего репозитория
