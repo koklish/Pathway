@@ -116,7 +116,7 @@ struct BrowserGitTests {
         }
     }
 
-    @Test("неудачный push объясняет причину в errorMessage")
+    @Test("неудачный push сообщает о сбое тостом, не прерывая работу")
     func failedPushReportsError() async throws {
         try await withTempDirAsync { dir in
             let repo = try makeRepo(in: dir, name: "Проект", branch: "main")
@@ -128,7 +128,8 @@ struct BrowserGitTests {
             model.gitPush()
             await model.waitForOperation()
 
-            #expect(model.errorMessage?.contains("Требуется авторизация") == true)
+            #expect(model.toast?.kind == .failure)
+            #expect(model.errorMessage == nil)
         }
     }
 

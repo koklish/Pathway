@@ -76,3 +76,23 @@ public struct RepositoryState: Equatable, Sendable {
         self.isDirty = isDirty
     }
 }
+
+/// Короткое сообщение о результате git-операции.
+///
+/// Отдельный тип, а не строка: у неудачи другой вид и другой срок показа, и
+/// признак приходится держать рядом с текстом. Identifiable — чтобы два подряд
+/// одинаковых результата дали новую анимацию: без смены идентификатора второй
+/// «Нового нет» остался бы висеть неотличимо от первого, и человек не понял бы,
+/// что операция вообще повторилась.
+public struct Toast: Identifiable, Equatable, Sendable {
+    public enum Kind: Sendable { case success, failure }
+
+    public let id = UUID()
+    public let kind: Kind
+    public let text: String
+
+    public init(_ kind: Kind, _ text: String) {
+        self.kind = kind
+        self.text = text
+    }
+}

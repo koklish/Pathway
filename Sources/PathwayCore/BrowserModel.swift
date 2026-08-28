@@ -24,6 +24,27 @@ public final class BrowserModel {
     public let pane: PaneState
     public private(set) var items: [FileItem] = []
     public var errorMessage: String?
+    /// Результат последней git-операции; вью показывает его тостом и
+    /// сбрасывает в nil. Отдельно от errorMessage: тот открывает модальное
+    /// окно, а обмен с сервером прерывать работу не должен — человек и так
+    /// смотрит на список файлов, ради которого операцию затевал.
+    public var toast: Toast? {
+        didSet {
+            // Таймер заводится присваиванием, а не каждым местом, где тост
+            // рождается: мест пять, и забытый вызов оставил бы сообщение
+            // висеть навсегда.
+            if toast != nil { startToastTimer() }
+        }
+    }
+    /// Сколько держать тост на экране. Замыкание, чтобы тесты не ждали
+    /// настоящие секунды: восемь секунд ради одной проверки — половина всего
+    /// прогона.
+    public var toastDuration: (Toast.Kind) -> Duration = { kind in
+        // Ошибка длиннее по тексту, и исчезни она за тот же срок, человек
+        // остался бы с ощущением, что что-то мелькнуло, а что — неизвестно.
+        kind == .success ? .seconds(3) : .seconds(8)
+    }
+    private var toastTask: Task<Void, Never>?
     public var showHiddenFiles = false
     public var operationProgress: Double?
     /// Название идущей операции для статус-бара («Архивация…», «Распаковка…»).
@@ -633,19 +654,56 @@ public final class BrowserModel {
     // в выделенный проект, то есть не туда, по чему человек кликнул. Без
     // аргумента цель прежняя, из gitTarget.
     public func gitFetch(at repository: URL? = nil) {
-        runGit(title: "Получение изменений…", at: repository) { [git] root in try await git.fetch(at: root) }
+        runGit(title: "Получение изменений…", failure: "Не удалось получить изменения", at: repository) {
+            [git] root in
+            try await git.fetch(at: root)
+        } toast: { before, after in
+            let arrived = (after?.behind ?? 0) - (before?.behind ?? 0)
+            // Именно прирост, а не итоговое «позади»: человек уже мог быть на
+            // десять коммитов позади и без этого fetch, и цифра 10 сказала бы
+            // о состоянии, а не о том, что запрос принёс.
+            return arrived > 0 ? "На сервере \(Self.plural(arrived, "новый коммит", "новых коммита", "новых коммитов"))" : "Нового нет"
+        }
     }
 
     public func gitPull(at repository: URL? = nil) {
-        runGit(title: "Загрузка изменений…", at: repository) { [git] root in try await git.pull(at: root) }
+        runGit(title: "Загрузка изменений…", failure: "Не удалось загрузить изменения", at: repository) {
+            [git] root in
+            try await git.pull(at: root)
+        } toast: { before, _ in
+            // Сколько было позади до операции — столько и загрузилось: pull
+            // идёт --ff-only, и частичного результата у него не бывает.
+            let loaded = before?.behind ?? 0
+            return loaded > 0 ? "Загружено \(Self.plural(loaded, "коммит", "коммита", "коммитов"))" : "Уже актуально"
+        }
     }
 
     public func gitPush(at repository: URL? = nil) {
-        runGit(title: "Отправка изменений…", at: repository) { [git] root in try await git.push(at: root) }
+        runGit(title: "Отправка изменений…", failure: "Не удалось отправить изменения", at: repository) {
+            [git] root in
+            try await git.push(at: root)
+        } toast: { before, _ in
+            let sent = before?.ahead ?? 0
+            return sent > 0 ? "Отправлено \(Self.plural(sent, "коммит", "коммита", "коммитов"))" : "Нечего отправлять"
+        }
     }
 
     public func gitSync(at repository: URL? = nil) {
-        runGit(title: "Синхронизация…", at: repository) { [git] root in try await git.sync(at: root) }
+        runGit(title: "Синхронизация…", failure: "Не удалось синхронизировать", at: repository) {
+            [git] root in
+            try await git.sync(at: root)
+        } toast: { before, _ in
+            // Обе половины в одной строке: sync — одна операция, и два тоста
+            // подряд вытеснили бы друг друга, показав только второй.
+            let loaded = before?.behind ?? 0
+            let sent = before?.ahead ?? 0
+            switch (loaded, sent) {
+            case (0, 0): return "Уже актуально"
+            case (0, _): return "Отправлено \(Self.plural(sent, "коммит", "коммита", "коммитов"))"
+            case (_, 0): return "Загружено \(Self.plural(loaded, "коммит", "коммита", "коммитов"))"
+            default: return "Загружено \(loaded), отправлено \(Self.plural(sent, "коммит", "коммита", "коммитов"))"
+            }
+        }
     }
 
     /// Кладёт в буфер имя ветки того репозитория, над которым работают команды.
@@ -670,13 +728,19 @@ public final class BrowserModel {
     /// содержимое рабочего дерева — без обновления список показывал бы файлы
     /// прежней ветки.
     public func gitSwitch(to branch: Branch, at repository: URL? = nil) {
-        runGit(title: "Переключение на \(branch.name)…", at: repository) { [git] root in
+        runGit(
+            title: "Переключение на \(branch.name)…",
+            failure: "Не удалось переключить ветку",
+            at: repository
+        ) { [git] root in
             if branch.isRemote {
                 try await git.switchToRemote(branch.name, at: root)
             } else {
                 try await git.switchBranch(to: branch.name, at: root)
             }
             await MainActor.run { self.reloadAsync() }
+        } toast: { _, _ in
+            "Ветка \(branch.name)"
         }
     }
 
@@ -689,8 +753,11 @@ public final class BrowserModel {
     /// Клонирует репозиторий в текущую папку.
     public func gitClone(from url: String, name: String) {
         let destination = pane.path
-        startOperation(title: "Клонирование…") { [git] _ in
+        // Не через runGit: клонировать нечего сравнивать — репозитория до
+        // операции ещё нет, и снимок состояния взять неоткуда.
+        startOperation(title: "Клонирование…", reportsErrorAsToast: "Не удалось клонировать") { [git] _ in
             try await git.clone(from: url, into: destination, name: name)
+            await MainActor.run { self.toast = Toast(.success, "Репозиторий склонирован") }
         }
     }
 
@@ -716,16 +783,45 @@ public final class BrowserModel {
     /// Именно в корне, а не в текущей папке: git работал бы и из вложенной,
     /// но клонирование и будущие пофайловые операции требуют явного корня,
     /// и один способ вычисления цели надёжнее двух.
+    ///
+    /// `toast` получает состояние репозитория до и после операции и возвращает
+    /// текст успеха. Состояние, а не вывод git: «Everything up-to-date» и
+    /// «Receiving objects» — английские строки без гарантий формата, а разница
+    /// счётчиков даёт то же самое числом и не зависит от версии git.
     private func runGit(
         title: String,
+        failure: String,
         at repository: URL? = nil,
-        _ body: @escaping (URL) async throws -> Void
+        _ body: @escaping (URL) async throws -> Void,
+        toast: @escaping (GitStatus?, GitStatus?) -> String
     ) {
         guard let root = repository ?? gitTarget else { return }
-        startOperation(title: title) { _ in
+        // Снимок до операции: после неё прежние счётчики взять уже неоткуда.
+        // Читается тем же git.status, что и индикатор, а не из
+        // currentRepository: операция могла уйти в кликнутый проект, а там
+        // индикатор показывает не его.
+        startOperation(title: title, reportsErrorAsToast: failure) { [git] _ in
+            let before = try? await git.status(at: root)
             try await body(root)
-            await MainActor.run { self.refreshRepositoryInBackground() }
+            let after = try? await git.status(at: root)
+            await MainActor.run {
+                self.toast = Toast(.success, toast(before, after))
+                self.refreshRepositoryInBackground()
+            }
         }
+    }
+
+    /// Согласует числительное с числом: «1 коммит», «3 коммита», «5 коммитов».
+    ///
+    /// Без этого тост читался бы машинным переводом — «Загружено 1 коммитов»
+    /// заметно каждому, кто читает по-русски.
+    private static func plural(_ count: Int, _ one: String, _ few: String, _ many: String) -> String {
+        let hundred = count % 100
+        let ten = count % 10
+        if hundred >= 11 && hundred <= 14 { return "\(count) \(many)" }
+        if ten == 1 { return "\(count) \(one)" }
+        if ten >= 2 && ten <= 4 { return "\(count) \(few)" }
+        return "\(count) \(many)"
     }
 
     // MARK: - Файловые операции
@@ -909,6 +1005,30 @@ public final class BrowserModel {
         await operationTask?.value
     }
 
+    // MARK: - Тосты
+
+    /// Заводит отсчёт до исчезновения тоста, отменяя отсчёт прежнего.
+    ///
+    /// Отмена обязательна: таймер вытесненного тоста, досчитав, погасил бы уже
+    /// показанный следующий — и тот пропал бы через мгновение после появления.
+    /// Она же покрывает и закрытие вручную: следующий тост заводит свой отсчёт
+    /// и тем снимает прежний, поэтому отменять его ещё и в dismissToast нечего.
+    private func startToastTimer() {
+        guard let current = toast else { return }
+        let duration = toastDuration(current.kind)
+        toastTask?.cancel()
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            guard !Task.isCancelled, let self else { return }
+            self.toast = nil
+        }
+    }
+
+    /// Убирает тост по клику.
+    public func dismissToast() {
+        toast = nil
+    }
+
     private func extractArchive(_ archive: URL, to destination: URL, password: String?) {
         startOperation(title: "Распаковка…") { [archiver] progress in
             do {
@@ -928,8 +1048,14 @@ public final class BrowserModel {
 
     /// Запускает операцию с архивом в фоне: прогресс в статус-бар, ошибки в алерт,
     /// по завершении список перечитывается.
+    /// `reportsErrorAsToast` — короткий текст неудачи вместо модального алерта.
+    /// Задан только у git-операций: сбой обмена с сервером человек исправляет в
+    /// терминале, а не в диалоге, и окно поверх списка файлов ему мешает. У
+    /// файловых операций текст остаётся в errorMessage — там ошибка означает,
+    /// что задуманное не случилось с конкретным файлом, и пропустить её нельзя.
     private func startOperation(
         title: String,
+        reportsErrorAsToast: String? = nil,
         _ body: @escaping (@escaping @Sendable (Double) -> Void) async throws -> Void
     ) {
         operationTitle = title
@@ -942,7 +1068,11 @@ public final class BrowserModel {
             } catch is CancellationError {
                 // Отмена — не ошибка.
             } catch {
-                errorMessage = Self.describe(error, at: pane.path)
+                if let short = reportsErrorAsToast {
+                    toast = Toast(.failure, short)
+                } else {
+                    errorMessage = Self.describe(error, at: pane.path)
+                }
             }
             operationTitle = nil
             operationProgress = nil
