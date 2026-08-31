@@ -100,6 +100,20 @@ public final class TabsModel {
         }
     }
 
+    /// Масштаб списка — настройка приложения, как и сортировка: один на все
+    /// вкладки и на все папки. Два хранилища одного значения разошлись бы при
+    /// первом открытии вкладки, как это было бы с showHiddenFiles.
+    ///
+    /// Вкладкам не раздаётся вовсе, в отличие от sort: масштаб не меняет ни
+    /// состав списка, ни его порядок — только то, как список нарисован. Читает
+    /// его напрямую вью, и BrowserModel о нём не знает.
+    public var scale: ListScale = .default {
+        didSet {
+            guard scale != oldValue else { return }
+            store.save(scale: scale)
+        }
+    }
+
     private let store: TabsStore
     private let fallback: URL
     /// Наблюдатель у каждой вкладки свой. Фабрика, а не готовый экземпляр:
@@ -124,6 +138,9 @@ public final class TabsModel {
         // сам didSet записал бы в хранилище только что прочитанное оттуда.
         let restoredSort = store.restoreSort()
         sort = restoredSort
+        // По той же причине, что и сортировка: didSet записал бы в хранилище
+        // только что прочитанное оттуда.
+        scale = store.restoreScale()
 
         let restored = store.restore()
         let items = restored.items.isEmpty ? [TabRecord(path: path)] : restored.items

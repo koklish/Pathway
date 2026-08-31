@@ -49,13 +49,34 @@ final class BranchChipView: NSView {
         }
     }
 
-    private static let height: CGFloat = 17
-    private static let iconSize: CGFloat = 10
-    private static let horizontalPadding: CGFloat = 6
-    private static let gap: CGFloat = 4
+    /// Кегль имени ветки. Задаёт весь размер чипа: плашка, значок, отступы и
+    /// счётчик считаются от него, поэтому масштабировать чип — значит задать
+    /// одно это число.
+    ///
+    /// 10.5 — размер, на котором чип жил до появления масштаба; он же остаётся
+    /// у адресной строки и меню, которые ползунку не подчиняются.
+    var fontSize: CGFloat = 10.5 {
+        didSet {
+            guard fontSize != oldValue else { return }
+            needsDisplay = true
+        }
+    }
 
-    private static let font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .medium)
-    private static let counterFont = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+    /// Пропорции подобраны на исходном кегле 10.5 и от него же выводятся:
+    /// набор констант на каждую ступень пришлось бы держать согласованным
+    /// вручную, а формула делает это сама.
+    private var height: CGFloat { ceil(fontSize * 1.6) }
+    private var iconSize: CGFloat { ceil(fontSize * 0.95) }
+    private var horizontalPadding: CGFloat { ceil(fontSize * 0.57) }
+    private var gap: CGFloat { ceil(fontSize * 0.38) }
+    /// Точка «есть незакоммиченные изменения».
+    private var dotSize: CGFloat { ceil(fontSize * 0.45) }
+
+    private var font: NSFont { .monospacedSystemFont(ofSize: fontSize, weight: .medium) }
+    private var counterFont: NSFont {
+        // Счётчик мельче имени на те же пол-пункта, что и раньше: он служебный.
+        .monospacedDigitSystemFont(ofSize: fontSize - 0.5, weight: .regular)
+    }
 
     override var isFlipped: Bool { true }
 
@@ -74,51 +95,51 @@ final class BranchChipView: NSView {
         path.lineWidth = 1
         path.stroke()
 
-        var x = plate.minX + Self.horizontalPadding
+        var x = plate.minX + horizontalPadding
 
         // Значок только если влезает целиком: на колонке, утащенной до
         // минимума, он торчал бы из плашки наружу.
-        if plate.width >= Self.horizontalPadding * 2 + Self.iconSize,
+        if plate.width >= horizontalPadding * 2 + iconSize,
            let icon = icon(for: content) {
             let frame = NSRect(
                 x: x,
-                y: plate.midY - Self.iconSize / 2,
-                width: Self.iconSize,
-                height: Self.iconSize
+                y: plate.midY - iconSize / 2,
+                width: iconSize,
+                height: iconSize
             )
             icon.draw(in: frame, from: .zero, operation: .sourceOver, fraction: 1)
-            x = frame.maxX + Self.gap
+            x = frame.maxX + gap
         }
 
         // Хвост считается первым: имя обрезается по остатку, а не наоборот —
         // иначе счётчик уехал бы за край плашки на длинных именах.
         let tail = tailText(for: content)
-        let tailWidth = tail.map { $0.size(withAttributes: [.font: Self.counterFont]).width } ?? 0
-        let dotWidth: CGFloat = content.isDirty ? 5 + Self.gap : 0
-        let available = plate.maxX - Self.horizontalPadding - x
-            - tailWidth - (tail == nil ? 0 : Self.gap) - dotWidth
+        let tailWidth = tail.map { $0.size(withAttributes: [.font: counterFont]).width } ?? 0
+        let dotWidth: CGFloat = content.isDirty ? dotSize + gap : 0
+        let available = plate.maxX - horizontalPadding - x
+            - tailWidth - (tail == nil ? 0 : gap) - dotWidth
 
         let style = NSMutableParagraphStyle()
         // По центру: начало говорит о типе ветки, конец — о номере задачи,
         // а середина у длинных имён вроде feature/SDLC/1897 всегда одна и та же.
         style.lineBreakMode = .byTruncatingMiddle
         let nameAttributes: [NSAttributedString.Key: Any] = [
-            .font: Self.font,
+            .font: font,
             .foregroundColor: tint,
             .paragraphStyle: style,
         ]
         let nameRect = NSRect(
             x: x,
-            y: plate.midY - Self.font.capHeight / 2 - 2,
+            y: plate.midY - font.capHeight / 2 - 2,
             width: max(0, available),
-            height: Self.height
+            height: height
         )
         (content.branch as NSString).draw(in: nameRect, withAttributes: nameAttributes)
 
-        var right = plate.maxX - Self.horizontalPadding
+        var right = plate.maxX - horizontalPadding
 
         if let tail {
-            let size = tail.size(withAttributes: [.font: Self.counterFont])
+            let size = tail.size(withAttributes: [.font: counterFont])
             let rect = NSRect(
                 x: right - size.width,
                 y: plate.midY - size.height / 2,
@@ -126,16 +147,21 @@ final class BranchChipView: NSView {
                 height: size.height
             )
             (tail as NSString).draw(in: rect, withAttributes: [
-                .font: Self.counterFont,
+                .font: counterFont,
                 .foregroundColor: tint.withAlphaComponent(0.85),
             ])
-            right = rect.minX - Self.gap
+            right = rect.minX - gap
         }
 
         if content.isDirty {
             // Точка дублирует цвет: различение по одному оттенку отсекает тех,
             // кто его не видит.
-            let dot = NSRect(x: right - 5, y: plate.midY - 2.5, width: 5, height: 5)
+            let dot = NSRect(
+                x: right - dotSize,
+                y: plate.midY - dotSize / 2,
+                width: dotSize,
+                height: dotSize
+            )
             tint.setFill()
             NSBezierPath(ovalIn: dot).fill()
         }
@@ -147,11 +173,11 @@ final class BranchChipView: NSView {
     /// ветка, ради которой индикатор и существует, читалась бы наполовину.
     var intrinsicWidth: CGFloat {
         guard let content else { return 0 }
-        let name = content.branch.size(withAttributes: [.font: Self.font]).width
+        let name = content.branch.size(withAttributes: [.font: font]).width
         let tail = tailText(for: content)
-            .map { $0.size(withAttributes: [.font: Self.counterFont]).width + Self.gap } ?? 0
-        let dot: CGFloat = content.isDirty ? 5 + Self.gap : 0
-        return Self.horizontalPadding * 2 + Self.iconSize + Self.gap + name + tail + dot
+            .map { $0.size(withAttributes: [.font: counterFont]).width + gap } ?? 0
+        let dot: CGFloat = content.isDirty ? dotSize + gap : 0
+        return horizontalPadding * 2 + iconSize + gap + name + tail + dot
     }
 
     // MARK: - Оформление
@@ -159,9 +185,9 @@ final class BranchChipView: NSView {
     private func plateRect() -> NSRect {
         NSRect(
             x: 0,
-            y: (bounds.height - Self.height) / 2,
+            y: (bounds.height - height) / 2,
             width: bounds.width,
-            height: Self.height
+            height: height
         )
     }
 
@@ -200,7 +226,7 @@ final class BranchChipView: NSView {
 
         guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return nil }
         let configured = image.withSymbolConfiguration(
-            .init(pointSize: Self.iconSize, weight: .medium)
+            .init(pointSize: iconSize, weight: .medium)
         ) ?? image
         let tinted = configured.tinted(with: color)
         Self.iconCache[key] = tinted

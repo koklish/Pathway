@@ -208,7 +208,9 @@ struct FileListView: NSViewRepresentable {
         table.style = .inset
         table.usesAlternatingRowBackgroundColors = true
         table.allowsMultipleSelection = true
-        table.rowHeight = 24
+        // Стартовая высота, дальше её ведёт applyScaleIfChanged: он же
+        // выставит сохранённую ступень при первом updateNSView.
+        table.rowHeight = appState.scale.rowHeight
         table.target = context.coordinator
         table.doubleAction = #selector(Coordinator.handleDoubleClick)
         table.dataSource = context.coordinator
@@ -278,6 +280,9 @@ struct FileListView: NSViewRepresentable {
         // раз и иначе навсегда сохранил бы биндинг от первого рендера, запись в
         // который не доходит до @State и не вызывает перерисовку.
         context.coordinator.rebind(renamingItem: $renamingItem)
+        // До reloadIfContentChanged: перестроенные там ячейки должны сразу
+        // получить новую высоту строки, иначе список моргнул бы дважды.
+        context.coordinator.applyScaleIfChanged()
         context.coordinator.reloadIfContentChanged()
         context.coordinator.syncSelection()
         // После syncSelection: прокрутка ищет строку в уже синхронизированной
@@ -335,6 +340,17 @@ struct FileListView: NSViewRepresentable {
     final class FileCell: NSTableCellView {
         private let showsIcon: Bool
 
+        /// Масштаб этой ячейки. Хранится в ней, а не читается из модели при
+        /// раскладке: ячейки переиспользуются, и layout() зовётся при скролле
+        /// — обращение к модели оттуда стоило бы на каждой строке.
+        var scale: ListScale = .default {
+            didSet {
+                guard scale != oldValue else { return }
+                textField?.font = .systemFont(ofSize: scale.fontSize)
+                needsLayout = true
+            }
+        }
+
         init(identifier: NSUserInterfaceItemIdentifier, showsIcon: Bool) {
             self.showsIcon = showsIcon
             super.init(frame: .zero)
@@ -368,14 +384,20 @@ struct FileListView: NSViewRepresentable {
             super.layout()
             var textLeft: CGFloat = 4
             if showsIcon, let icon = imageView {
-                icon.frame = NSRect(x: 4, y: (bounds.height - 16) / 2, width: 16, height: 16)
-                textLeft = icon.frame.maxX + 6
+                let side = scale.iconSize
+                icon.frame = NSRect(x: 4, y: (bounds.height - side) / 2, width: side, height: side)
+                // Зазор растёт вместе с иконкой: постоянные 6 pt на огромной
+                // ступени прижимали бы имя к значку вплотную.
+                textLeft = icon.frame.maxX + max(6, side * 0.38)
             }
+            // Высота поля от шрифта, а не константа: жёсткие 17 pt обрезали бы
+            // выносные элементы кириллицы на крупных ступенях.
+            let textHeight = ceil(scale.fontSize * 1.4)
             textField?.frame = NSRect(
                 x: textLeft,
-                y: (bounds.height - 17) / 2,
+                y: (bounds.height - textHeight) / 2,
                 width: max(0, bounds.width - textLeft - 4),
-                height: 17
+                height: textHeight
             )
         }
     }
@@ -386,6 +408,16 @@ struct FileListView: NSViewRepresentable {
     /// выделении строки, и без него синий чип на синем фоне исчезал бы.
     final class BranchChipCell: NSTableCellView {
         private let chip = BranchChipView()
+
+        /// Чип идёт за именем файла: оставленный на прежнем кегле, на крупной
+        /// ступени он выглядел бы приклеенным от прошлого масштаба.
+        var scale: ListScale = .default {
+            didSet {
+                guard scale != oldValue else { return }
+                chip.fontSize = scale.branchFontSize
+                needsLayout = true
+            }
+        }
 
         var branch: String? {
             didSet {
@@ -444,6 +476,10 @@ struct FileListView: NSViewRepresentable {
         /// Флаг metadataLoaded здесь обязателен — иначе догрузка размеров и дат
         /// не доедет до экрана, ведь состав списка при ней не меняется.
         private var renderedSignature: [SignatureEntry] = []
+        /// Ступень, которую таблица уже показывает. Опционал, а не .default:
+        /// первое применение обязано выставить rowHeight, даже если масштаб
+        /// совпал с умолчанием, — таблица приходит с высотой из makeNSView.
+        private var renderedScale: ListScale?
 
         struct SignatureEntry: Equatable {
             let url: URL
@@ -458,6 +494,76 @@ struct FileListView: NSViewRepresentable {
             guard signature != renderedSignature else { return }
             renderedSignature = signature
             table?.reloadData()
+        }
+
+        /// Применяет масштаб к таблице: высота строк и перестройка ячеек.
+        ///
+        /// Отдельно от reloadIfContentChanged: подпись содержимого при смене
+        /// масштаба не меняется — тот же набор URL с теми же метаданными, — и
+        /// проверка по ней ступень бы проглотила.
+        func applyScaleIfChanged() {
+            let scale = appState.scale
+            guard scale != renderedScale, let table else { return }
+            let isFirstApply = renderedScale == nil
+            renderedScale = scale
+
+            // Якорь снимаем до правки геометрии: rowHeight пересчитывает
+            // раскладку сразу, и строка, прочитанная после него, была бы уже
+            // из перестроенной таблицы — не та, что видел человек.
+            //
+            // Держимся за номер строки, а не за смещение в точках: высота
+            // строк меняется, и прежнее смещение указало бы на другой файл —
+            // тем дальше, чем ниже пользователь пролистал.
+            let visible = table.rows(in: table.visibleRect)
+            let anchor = visible.length > 0 ? visible.location : nil
+
+            table.rowHeight = scale.rowHeight
+            // Шапка на ступень мельче содержимого: она подпись к колонке, а не
+            // данные. Кегль ставится в headerCell — заголовки рисует он, а не
+            // ячейка строки, и шрифт таблицы их не касается.
+            for column in table.tableColumns {
+                column.headerCell.font = .systemFont(ofSize: scale.headerFontSize)
+                // Ширину ведёт масштаб: рассчитанные под кегль 12 точки не
+                // вмещают дату на 16 pt, и «28 авг. 2026 г., 15:37» обрезалось
+                // бы на каждой строке.
+                //
+                // Ручную правку ширины это стирает, и так и задумано: она
+                // нигде не сохраняется и живёт лишь до перезапуска, а
+                // обрезанная дата — навсегда.
+                guard let kind = Column(rawValue: column.identifier.rawValue) else { continue }
+                let extra = kind == .name ? scale.nameColumnExtraWidth : 0
+                column.width = kind.width * scale.columnWidthFactor + extra
+            }
+            // Высота шапки не считается от её шрифта сама: NSTableHeaderView
+            // берёт её из своей рамки, и на крупной ступени заголовок обрезался
+            // бы сверху и снизу.
+            if let header = table.headerView {
+                header.frame.size.height = ceil(scale.headerFontSize * 1.9)
+            }
+
+            // На первом применении восстанавливать нечего: таблица ещё пуста,
+            // а noteHeightOfRows на пустом списке только зря считает.
+            guard !isFirstApply else { return }
+
+            table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<table.numberOfRows))
+            // Ячейки переиспользуются, и уже показанные держат прежний кегль:
+            // без reloadData сменилась бы только высота строки, а шрифт с
+            // иконкой остались бы от прошлой ступени.
+            table.reloadData()
+            // Выделение переживает reloadData само, но синхронизация модели с
+            // таблицей на этом пути не идёт — восстанавливать его не нужно.
+
+            // Ставим якорную строку под шапку, а не зовём scrollRowToVisible:
+            // тот подтягивает строку минимальным движением и, если она и так
+            // видна у нижнего края, не двигает скролл вовсе — список остался
+            // бы на прежних точках, то есть на других файлах.
+            if let anchor, anchor < table.numberOfRows,
+               let scrollView = table.enclosingScrollView {
+                scrollView.contentView.scroll(to: table.rect(ofRow: anchor).origin)
+                // Без этого полоса прокрутки осталась бы на прежнем месте:
+                // scroll(to:) двигает clip view мимо scroll view.
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+            }
         }
 
         init(
@@ -491,6 +597,7 @@ struct FileListView: NSViewRepresentable {
             if column == .branch {
                 let cell = tableView.makeView(withIdentifier: column.identifier, owner: self) as? BranchChipCell
                     ?? BranchChipCell(identifier: column.identifier)
+                cell.scale = appState.scale
                 cell.branch = item.branch
                 cell.alphaValue = model.pane.isCut(item.url) ? 0.5 : 1.0
                 return cell
@@ -500,6 +607,9 @@ struct FileListView: NSViewRepresentable {
             let cell = tableView.makeView(withIdentifier: column.identifier, owner: self) as? FileCell
                 ?? FileCell(identifier: column.identifier, showsIcon: column == .name)
 
+            // До текста: шрифт ставит didSet масштаба, и присвоенный после он
+            // переписал бы выравнивание строки под новый кегль лишний раз.
+            cell.scale = appState.scale
             cell.textField?.stringValue = model.text(for: item, column: column.rawValue)
             cell.textField?.delegate = self
             cell.textField?.isEditable = column == .name
@@ -507,7 +617,7 @@ struct FileListView: NSViewRepresentable {
             cell.textField?.textColor = column == .name ? .labelColor : .secondaryLabelColor
 
             if column == .name {
-                cell.imageView?.image = IconCache.icon(for: item)
+                cell.imageView?.image = IconCache.icon(for: item, size: appState.scale.iconSize)
             }
 
             // Вырезанные файлы выглядят полупрозрачными, как в проводнике Windows.

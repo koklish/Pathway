@@ -9,30 +9,46 @@ import UniformTypeIdentifiers
 /// неотличима, поэтому берём её и кэшируем по расширению.
 @MainActor
 enum IconCache {
-    private static var byExtension: [String: NSImage] = [:]
-    private static var folderIcon: NSImage?
+    /// Размер иконки вне списка файлов: полоса вкладок и результаты поиска
+    /// масштаб не разделяют и остаются на нём всегда.
+    static let fixedSize: CGFloat = 16
+
+    /// Ключ — расширение вместе с размером: `NSImage.size` меняет сам объект,
+    /// и общая на все размеры запись отдавала бы растянутый растр от прошлой
+    /// ступени всем, кто попросил иконку до смены масштаба.
+    private struct Key: Hashable {
+        let ext: String
+        let size: CGFloat
+    }
+
+    private static var byExtension: [Key: NSImage] = [:]
+    private static var folderIcons: [CGFloat: NSImage] = [:]
 
     /// Иконка папки. Нужна полосе вкладок, где элемент — путь, а не FileItem.
-    static var folder: NSImage {
-        if let cached = folderIcon { return cached }
+    static var folder: NSImage { folder(size: fixedSize) }
+
+    static func folder(size: CGFloat) -> NSImage {
+        if let cached = folderIcons[size] { return cached }
         let icon = NSWorkspace.shared.icon(for: .folder)
-        icon.size = NSSize(width: 16, height: 16)
-        folderIcon = icon
+        icon.size = NSSize(width: size, height: size)
+        folderIcons[size] = icon
         return icon
     }
 
-    static func icon(for item: FileItem) -> NSImage {
+    /// Размер по умолчанию — для вызывающих вне списка файлов: им масштаб не
+    /// нужен, и параметр каждый раз указывать не приходится.
+    static func icon(for item: FileItem, size: CGFloat = fixedSize) -> NSImage {
         if item.isDirectory {
-            return folder
+            return folder(size: size)
         }
 
-        let ext = item.url.pathExtension.lowercased()
-        if let cached = byExtension[ext] { return cached }
+        let key = Key(ext: item.url.pathExtension.lowercased(), size: size)
+        if let cached = byExtension[key] { return cached }
 
-        let type = UTType(filenameExtension: ext) ?? .data
+        let type = UTType(filenameExtension: key.ext) ?? .data
         let icon = NSWorkspace.shared.icon(for: type)
-        icon.size = NSSize(width: 16, height: 16)
-        byExtension[ext] = icon
+        icon.size = NSSize(width: size, height: size)
+        byExtension[key] = icon
         return icon
     }
 }

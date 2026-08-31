@@ -70,7 +70,7 @@ struct MainWindow: View {
                     .id(appState.tabs.active.id)
                 }
                 Divider()
-                StatusBarView(model: model)
+                StatusBarView(model: model, appState: appState)
             }
             // Тост оверлеем, а не строкой в VStack: встроенный в поток, он
             // раздвигал бы список файлов при каждом появлении и ронял позицию

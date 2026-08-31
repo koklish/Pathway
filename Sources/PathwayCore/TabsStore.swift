@@ -27,6 +27,7 @@ public final class TabsStore {
     private let activeKey = "tabs.activeIndex"
     private let sortKeyKey = "sort.key"
     private let sortAscendingKey = "sort.ascending"
+    private let listScaleKey = "list.scale"
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -51,6 +52,25 @@ public final class TabsStore {
         let ascending = defaults.object(forKey: sortAscendingKey) as? Bool
             ?? SortSettings.defaultAscending
         return SortSettings(key: key, ascending: ascending)
+    }
+
+    // MARK: - Масштаб списка
+
+    public func save(scale: ListScale) {
+        defaults.set(scale.rawValue, forKey: listScaleKey)
+    }
+
+    /// Сохранённый масштаб или умолчание.
+    ///
+    /// Читается через object(forKey:), а не integer(forKey:): для отсутствующего
+    /// ключа integer отдаёт 0, а 0 — это .compact. Список у не трогавшего
+    /// ползунок сжался бы сам собой при первом же запуске новой версии.
+    ///
+    /// Незнакомое число тоже сводится к умолчанию: сессию мог записать билд с
+    /// другим набором ступеней, и rawValue вне шкалы там законен.
+    public func restoreScale() -> ListScale {
+        guard let raw = defaults.object(forKey: listScaleKey) as? Int else { return .default }
+        return ListScale(rawValue: raw) ?? .default
     }
 
     public func save(items: [TabRecord], activeIndex: Int) {
