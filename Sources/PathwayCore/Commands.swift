@@ -47,7 +47,7 @@ public enum CommandID: String, CaseIterable, Sendable {
     // Вкладки
     case newTab, closeTab, pinTab, nextTab, previousTab, openInNewTab
     // Git
-    case gitClone, gitFetch, gitPull, gitPush, gitSync, gitCopyBranch
+    case gitClone, gitFetch, gitPull, gitPush, gitSync, gitCopyBranch, gitCommits
 }
 
 /// Команда приложения: единственное описание действия, из которого строятся
@@ -471,6 +471,30 @@ public enum CommandRegistry {
             icon: "arrow.triangle.2.circlepath",
             isEnabled: { $0.isGitAvailable && !$0.browser.isReadOnlyVolume },
             run: { $0.browser.gitSync() }
+        ),
+        // Открывает панель, а не запускает операцию, — поэтому стоит в меню
+        // отдельной секцией над Pull и Push. Английское название из того же
+        // ряда, что и они: пункт ведёт к списку коммитов, и «История
+        // коммитов» заставляла бы сверять её с git log при каждом чтении.
+        AppCommand(
+            id: .gitCommits,
+            title: "Commits",
+            shortcut: Shortcut(.character("g"), [.command, .option]),
+            icon: "clock.arrow.circlepath",
+            // Без проверки isBusy и isReadOnlyVolume: панель только смотрит.
+            // Погашенный вход в просмотр обещал бы недоступность того, что
+            // доступно и во время операции, и на томе только для чтения.
+            isEnabled: { !$0.isEditingText && $0.browser.gitTarget != nil },
+            run: { state in
+                // Открытие сбрасывает цель на текущую папку: без сброса ⌥⌘G
+                // показал бы историю проекта, по которому кликали в прошлый
+                // раз, а не того, где человек стоит.
+                if state.isCommitsPanelOpen {
+                    state.isCommitsPanelOpen = false
+                } else {
+                    state.openCommitsPanel()
+                }
+            }
         ),
         AppCommand(
             id: .gitCopyBranch,

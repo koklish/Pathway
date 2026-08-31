@@ -1,9 +1,6 @@
 import Foundation
 
-/// Операции над репозиторием целиком: состояние, обмен с сервером, клонирование.
-///
-/// Пофайловых операций здесь нет намеренно: commit, discard и ignore работают с
-/// выделением и требуют своего интерфейса — это отдельная задача.
+/// Операции над репозиторием: состояние, история, коммит, обмен с сервером.
 public struct GitService: Sendable {
     private let git: any GitRunning
 
@@ -19,6 +16,93 @@ public struct GitService: Sendable {
     public func status(at repository: URL) async throws -> GitStatus {
         let result = try await run(["status", "--porcelain=v2", "--branch"], in: repository)
         return GitStatus.parse(result.output)
+    }
+
+    /// Изменённые файлы рабочего дерева.
+    ///
+    /// Тем же вызовом, что и `status`, — разбирается только другой частью
+    /// вывода: запускать git второй раз ради того же ответа незачем.
+    public func changes(at repository: URL) async throws -> [GitChange] {
+        // -uall, в отличие от status для чипа: без него новая папка приходит
+        // одной записью «папка/», и галочка на ней означала бы «всё внутри» —
+        // а панель отмечает файлы поштучно. Чипу этот флаг не нужен и стоил бы
+        // обхода всех файлов новой папки ради одного признака «грязно».
+        let result = try await run(["status", "--porcelain=v2", "-uall"], in: repository)
+        return GitChange.parse(result.output)
+    }
+
+    /// История коммитов, свежие первыми.
+    ///
+    /// `skip` — сколько уже показано: панель дочитывает историю порциями, а не
+    /// целиком. В репозитории с сорока тысячами коммитов полное чтение заняло
+    /// бы секунды, и панель открывалась бы с задержкой.
+    public func log(at repository: URL, limit: Int, skip: Int = 0) async throws -> [Commit] {
+        // Имена удалённых читаются перед историей: без них серверная ветка
+        // fork/main неотличима от локальной ветки со слэшем в имени.
+        let remotes = try await remoteNames(at: repository)
+        let result = try await run(GitLog.arguments(limit: limit, skip: skip), in: repository)
+        return GitLog.parse(result.output, remotes: remotes)
+    }
+
+    /// Файлы, затронутые одним коммитом.
+    ///
+    /// `--name-status` без патча: тело диффа на большом коммите — мегабайты, а
+    /// панели нужны только имена и буквы состояния.
+    public func files(of hash: String, at repository: URL) async throws -> [GitChange] {
+        // --root не нужен: с --name-status git перечисляет файлы и у первого
+        // коммита истории, у которого родителя нет. Проверено на git 2.x.
+        let result = try await run(["show", "--name-status", "--format=", hash], in: repository)
+        return GitChange.parseNameStatus(result.output)
+    }
+
+    /// Имена удалённых репозиториев. Пустой список — удалённых нет вовсе.
+    private func remoteNames(at repository: URL) async throws -> [String] {
+        let result = try await run(["remote"], in: repository)
+        return result.output
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Добавляет файлы в индекс — они войдут в следующий коммит.
+    ///
+    /// Явные пути после `--`, а не `add .`: точка забрала бы и файлы, галочки с
+    /// которых человек снял. Разделитель обязателен — без него файл с именем
+    /// вроде `-f` был бы принят за флаг.
+    public func stage(_ paths: [String], at repository: URL) async throws {
+        guard !paths.isEmpty else { return }
+        try await run(["add", "--"] + paths, in: repository)
+    }
+
+    /// Убирает файлы из индекса, не трогая сами правки.
+    public func unstage(_ paths: [String], at repository: URL) async throws {
+        guard !paths.isEmpty else { return }
+        // reset, а не restore --staged: последний в репозитории без единого
+        // коммита падает — HEAD там ещё не существует.
+        try await run(["reset", "--quiet", "HEAD", "--"] + paths, in: repository)
+    }
+
+    /// Создаёт коммит из того, что лежит в индексе.
+    ///
+    /// Сообщение аргументом: без `-m` git открыл бы редактор, которого в
+    /// приложении нет, и операция висела бы, пока её не снимут.
+    public func commit(message: String, at repository: URL) async throws {
+        try await run(["commit", "-m", message], in: repository)
+    }
+
+    /// Возвращает файлы к состоянию HEAD, неотслеживаемые — удаляет.
+    ///
+    /// Два списка, а не один: `restore` на файле, которого нет в HEAD, падает —
+    /// восстанавливать там нечего, такой файл можно только удалить.
+    public func discard(_ tracked: [String], untracked: [String], at repository: URL) async throws {
+        if !tracked.isEmpty {
+            // И индекс, и дерево: файл мог быть добавлен в индекс, и без
+            // --staged откат оставил бы там прежнюю правку.
+            try await run(["restore", "--staged", "--worktree", "--"] + tracked, in: repository)
+        }
+        if !untracked.isEmpty {
+            try await run(["clean", "-f", "--"] + untracked, in: repository)
+        }
     }
 
     public func fetch(at repository: URL) async throws {

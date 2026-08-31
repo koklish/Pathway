@@ -254,4 +254,165 @@ struct GitCLIIntegrationTests {
             #expect(before.ahead == 1)
         }
     }
+
+    // MARK: - История и коммит
+
+    @Test("история настоящего репозитория разбирается в коммиты")
+    func readsRealLog() async throws {
+        try await withTempDirAsync { dir in
+            try await makeRepository(at: dir)
+
+            let commits = try await GitService().log(at: dir, limit: 10)
+
+            #expect(commits.count == 1)
+            #expect(commits[0].subject == "Первый")
+            #expect(commits[0].author == "Тест")
+            // HEAD указывает на main — панель по этой ссылке рисует «вы здесь».
+            #expect(commits[0].refs.contains(CommitRef(name: "main", kind: .head)))
+        }
+    }
+
+    @Test("слияние в настоящем репозитории даёт коммит с двумя родителями")
+    func readsRealMerge() async throws {
+        try await withTempDirAsync { dir in
+            try await makeRepository(at: dir)
+            let git = GitCLI()
+
+            _ = try await git.run(["switch", "-q", "-c", "ветка"], in: dir)
+            try "вбок".write(to: dir.appendingPathComponent("вбок.txt"), atomically: true, encoding: .utf8)
+            _ = try await git.run(["add", "."], in: dir)
+            _ = try await git.run(["commit", "-q", "-m", "Вбок"], in: dir)
+            _ = try await git.run(["switch", "-q", "main"], in: dir)
+            try "прямо".write(to: dir.appendingPathComponent("прямо.txt"), atomically: true, encoding: .utf8)
+            _ = try await git.run(["add", "."], in: dir)
+            _ = try await git.run(["commit", "-q", "-m", "Прямо"], in: dir)
+            _ = try await git.run(["merge", "--no-ff", "-m", "Слияние", "ветка"], in: dir)
+
+            let commits = try await GitService().log(at: dir, limit: 10)
+            let rows = GitGraph.build(commits)
+
+            #expect(commits[0].isMerge)
+            #expect(commits[0].parents.count == 2)
+            // Из строки слияния выходят две линии: без второй ветка «ветка»
+            // висела бы в графе оборванной.
+            #expect(rows[0].links.count == 2)
+            #expect(rows.map(\.width).max() == 2)
+        }
+    }
+
+    @Test("изменения настоящего репозитория различают индекс и рабочее дерево")
+    func readsRealChanges() async throws {
+        try await withTempDirAsync { dir in
+            try await makeRepository(at: dir)
+            let service = GitService()
+
+            try "правка".write(to: dir.appendingPathComponent("файл.txt"), atomically: true, encoding: .utf8)
+            try "новый".write(to: dir.appendingPathComponent("новый.txt"), atomically: true, encoding: .utf8)
+
+            let before = try await service.changes(at: dir)
+            #expect(before.count == 2)
+            #expect(before.allSatisfy { !$0.isStaged })
+            #expect(before.contains { $0.status == .untracked })
+
+            try await service.stage(["файл.txt"], at: dir)
+            let after = try await service.changes(at: dir)
+
+            // Индекс и галочки — одно состояние: файл, добавленный git add,
+            // обязан прийти сюда отмеченным.
+            #expect(after.first { $0.path == "файл.txt" }?.isStaged == true)
+            #expect(after.first { $0.path == "новый.txt" }?.isStaged == false)
+        }
+    }
+
+    @Test("коммит через сервис появляется в истории")
+    func commitAppearsInLog() async throws {
+        try await withTempDirAsync { dir in
+            try await makeRepository(at: dir)
+            let service = GitService()
+
+            try "правка".write(to: dir.appendingPathComponent("файл.txt"), atomically: true, encoding: .utf8)
+            try await service.stage(["файл.txt"], at: dir)
+            try await service.commit(message: "Вторая правка", at: dir)
+
+            let commits = try await service.log(at: dir, limit: 10)
+
+            #expect(commits.map(\.subject) == ["Вторая правка", "Первый"])
+            #expect(try await service.changes(at: dir).isEmpty)
+        }
+    }
+
+    @Test("файлы коммита читаются, включая самый первый в истории")
+    func readsFilesOfCommits() async throws {
+        try await withTempDirAsync { dir in
+            try await makeRepository(at: dir)
+            let service = GitService()
+
+            let commits = try await service.log(at: dir, limit: 10)
+            // Именно первый коммит: у него нет родителя, и ошибка во флагах
+            // git show дала бы здесь пустой список вместо файлов.
+            let files = try await service.files(of: commits[0].hash, at: dir)
+
+            #expect(files.map(\.path) == ["файл.txt"])
+            #expect(files[0].status == .added)
+        }
+    }
+
+    @Test("откат возвращает изменённый файл и удаляет неотслеживаемый")
+    func discardRestoresAndDeletes() async throws {
+        try await withTempDirAsync { dir in
+            try await makeRepository(at: dir)
+            let service = GitService()
+            let tracked = dir.appendingPathComponent("файл.txt")
+            let untracked = dir.appendingPathComponent("лишний.txt")
+
+            try "испорчено".write(to: tracked, atomically: true, encoding: .utf8)
+            try "мусор".write(to: untracked, atomically: true, encoding: .utf8)
+
+            try await service.discard(["файл.txt"], untracked: ["лишний.txt"], at: dir)
+
+            #expect(try String(contentsOf: tracked, encoding: .utf8) == "первый")
+            #expect(!FileManager.default.fileExists(atPath: untracked.path))
+            #expect(try await service.changes(at: dir).isEmpty)
+        }
+    }
+
+    @Test("русское имя файла в изменениях читается, а не приходит escape-последовательностями")
+    func readsCyrillicPathInChanges() async throws {
+        try await withTempDirAsync { dir in
+            try await makeRepository(at: dir)
+
+            // git закавычивает всё вне ASCII и пишет байты в \nnn. Без
+            // раскавычивания панель показывала бы «\321\204» вместо имени —
+            // а в этом проекте русские имена обычны.
+            let folder = dir.appendingPathComponent("моя папка")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try "текст".write(
+                to: folder.appendingPathComponent("заметка.txt"),
+                atomically: true, encoding: .utf8
+            )
+
+            let changes = try await GitService().changes(at: dir)
+
+            #expect(changes.map(\.path) == ["моя папка/заметка.txt"])
+        }
+    }
+
+    @Test("новая папка приходит списком файлов, а не одной записью «папка/»")
+    func listsFilesInsideUntrackedFolder() async throws {
+        try await withTempDirAsync { dir in
+            try await makeRepository(at: dir)
+
+            // Без -uall git сворачивает всю новую папку в одну строку «новая/»,
+            // и галочка на ней означала бы «всё внутри» — а панель отмечает
+            // файлы поштучно, и снять один из них было бы нечем.
+            let nested = dir.appendingPathComponent("новая/вложенная")
+            try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+            try "a".write(to: dir.appendingPathComponent("новая/а.txt"), atomically: true, encoding: .utf8)
+            try "b".write(to: nested.appendingPathComponent("б.txt"), atomically: true, encoding: .utf8)
+
+            let changes = try await GitService().changes(at: dir)
+
+            #expect(changes.map(\.path).sorted() == ["новая/а.txt", "новая/вложенная/б.txt"])
+        }
+    }
 }

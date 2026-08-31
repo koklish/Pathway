@@ -66,6 +66,29 @@ public final class BrowserModel {
     /// вовсе, а индикатор обязан её показывать.
     public private(set) var currentRepository: RepositoryState?
 
+    /// Статусы репозиториев-папок текущего списка, по корню репозитория.
+    ///
+    /// Отдельно от items, а не полем FileItem: статус приходит четвёртой
+    /// ступенью, много позже имён, и хранись он в элементе — каждый ответ git
+    /// пересобирал бы весь массив, а с ним и сортировку со сравнением в
+    /// reloadIfContentChanged.
+    ///
+    /// Приватная запись: заполняет её только собственный проход, и внешняя
+    /// правка разошлась бы с папкой, для которой статусы считались.
+    private var rowStatuses: [URL: GitStatus] = [:]
+    /// Проход статусов строк. Своя задача: он переживает метаданные и обязан
+    /// отменяться сменой папки, не трогая остальные ступени загрузки.
+    private var rowStatusTask: Task<Void, Never>?
+
+    /// Посчитанный статус репозитория в строке списка; nil — не репозиторий,
+    /// ещё не досчитали или git на нём не сработал.
+    ///
+    /// Только чтение готового: метод зовётся из отрисовки каждой строки, и
+    /// запусти он git — прокрутка порождала бы процесс на кадр.
+    public func rowStatus(for url: URL) -> GitStatus? {
+        rowStatuses[url.standardizedFileURL]
+    }
+
     /// Файл, к которому таблица должна прокрутиться. Обратный канал «Core
     /// просит UI»: прокрутка принадлежит NSScrollView, из модели её не сделать.
     /// Вью сбрасывает поле, выполнив запрос.
@@ -98,6 +121,15 @@ public final class BrowserModel {
     /// на следующем проходе рендера, иначе закрытие приложения между сменой
     /// папки и отрисовкой потеряло бы последний путь.
     var didChangeFolder: (() -> Void)?
+
+    /// Сколько раз папка менялась снаружи. Растёт на каждое событие
+    /// наблюдателя, включая правку содержимого существующего файла.
+    ///
+    /// Счётчик, а не флаг: наблюдающему нужна смена значения, а флаг пришлось
+    /// бы сбрасывать — и два события подряд слились бы в одно.
+    /// &+ вместо +: переполнение за годы работы невозможно, но обрушить
+    /// приложение на арифметике ради счётчика обновлений было бы нелепо.
+    public private(set) var externalChangeCount = 0
 
     private let loader = DirectoryLoader()
     private let operations = FileOperations()
@@ -236,6 +268,12 @@ public final class BrowserModel {
         // отрисовку файлов ради справочной строки.
         refreshRepositoryInBackground()
 
+        // Статусы прошлой папки сбрасываются здесь, до первого await: иначе
+        // строка с тем же именем в новой папке унаследовала бы чужой счётчик и
+        // показывала бы его, пока не досчитается свой.
+        rowStatusTask?.cancel()
+        rowStatuses = [:]
+
         loadTask?.cancel()
         loadTask = Task { [loader] in
             if !hadCache { isLoading = true }
@@ -258,6 +296,11 @@ public final class BrowserModel {
                 guard !Task.isCancelled, pane.path == directory else { return }
                 cache.store(detailed, for: directory, showHidden: showHidden)
                 items = sorted(detailed)
+
+                // Четвёртая ступень: счётчики правок в колонке «Ветка». После
+                // метаданных, а не вместо них — запуск git на каждый
+                // репозиторий дороже всего остального прохода вместе взятого.
+                refreshRowStatusesInBackground()
             } catch {
                 guard !Task.isCancelled, pane.path == directory else { return }
                 items = []
@@ -326,6 +369,12 @@ public final class BrowserModel {
         // заканчивается вызовом reload — второе обновление поверх неё лишнее.
         guard !isRenaming, !isBusy else { return }
 
+        // Счётчик поднимается до разбора события и независимо от того, изменил
+        // ли он состав списка: панели коммитов важна сама правка, а
+        // сохранение файла в редакторе числа файлов не меняет — следи она за
+        // ним, статус остался бы на момент открытия.
+        externalChangeCount &+= 1
+
         let directory = pane.path
         let showHidden = showHiddenFiles
 
@@ -343,6 +392,12 @@ public final class BrowserModel {
 
             guard !Task.isCancelled, pane.path == directory else { return }
             merge(names, hasModifications: change.hasModifications, in: directory, showHidden: showHidden)
+
+            // Счётчики правок пересчитываем и здесь: коммит из панели или
+            // работа в другом окне меняют статус, не трогая состав папки, — а
+            // merge смотрит только на него, и число в чипе осталось бы прежним
+            // до перехода в другую папку и обратно.
+            refreshRowStatusesInBackground()
         }
     }
 
@@ -604,6 +659,47 @@ public final class BrowserModel {
 
     // MARK: - Git
 
+    /// Досчитывает статусы репозиториев, попавших в строки списка.
+    ///
+    /// Четвёртая ступень загрузки, после имён и метаданных: `git status` —
+    /// запуск процесса, до 21 мс на репозиторий, и ждать его до показа списка
+    /// нельзя. Ветку в строке даёт чтение `.git/HEAD` и она видна сразу;
+    /// счётчик правок доезжает следом.
+    public func refreshRowStatuses() async {
+        refreshRowStatusesInBackground()
+        await rowStatusTask?.value
+    }
+
+    private func refreshRowStatusesInBackground() {
+        let directory = pane.path
+        // Список снимается здесь, а не читается внутри задачи: items меняются
+        // следующими ступенями загрузки, и проход шёл бы по съезжающему набору.
+        let repositories = items
+            .filter { $0.isDirectory && $0.branch != nil }
+            .map(\.url)
+
+        rowStatusTask?.cancel()
+        guard !repositories.isEmpty else { return }
+
+        rowStatusTask = Task { [git] in
+            // По одному, а не группой: репозиториев в папке проектов бывают
+            // десятки, и параллельный запуск дал бы десятки процессов git разом
+            // ради колонки, которую читают мимоходом. Результат каждого
+            // показывается сразу, поэтому счётчики проявляются по мере счёта, а
+            // не разом в конце.
+            for repository in repositories {
+                guard !Task.isCancelled, pane.path == directory else { return }
+                // Ошибка одного репозитория не должна останавливать проход:
+                // сломанный .git у соседа оставил бы без счётчиков весь список.
+                guard let status = try? await git.status(at: repository) else { continue }
+                // Обе защиты, как и в reloadAsync: отмена кооперативна, и
+                // запущенный вызов git её не увидит — отсюда проверка пути.
+                guard !Task.isCancelled, pane.path == directory else { return }
+                rowStatuses[repository.standardizedFileURL] = status
+            }
+        }
+    }
+
     /// Перечитывает состояние репозитория текущей папки.
     public func refreshRepository() async {
         refreshRepositoryInBackground()
@@ -644,7 +740,7 @@ public final class BrowserModel {
                 branch: status.branch ?? GitRepository.branch(at: root),
                 ahead: status.ahead,
                 behind: status.behind,
-                isDirty: status.isDirty
+                changedFiles: status.changedFiles
             )
         }
     }
@@ -826,6 +922,9 @@ public final class BrowserModel {
             await MainActor.run {
                 self.toast = Toast(.success, toast(result))
                 self.refreshRepositoryInBackground()
+                // И счётчики строк: pull в проекте из списка меняет его статус,
+                // а состав папки — нет, и слежение за ней события не даст.
+                self.refreshRowStatusesInBackground()
             }
         }
     }

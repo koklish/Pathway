@@ -20,6 +20,11 @@ struct AddressBarView: View {
     /// Menu до показа, и асинхронная загрузка успела бы только к следующему
     /// открытию — первый клик показал бы пустое место.
     @State private var recentBranches: [Branch] = []
+    /// Курсор над чипом ветки и нажата ли на нём кнопка. Живут здесь, а не в
+    /// самом чипе: наведение отслеживает Menu целиком, и вложенный .onHover
+    /// спорил бы с ним — подсветка мигала бы на границе между ними.
+    @State private var isChipHovered = false
+    @State private var isChipPressed = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -62,11 +67,27 @@ struct AddressBarView: View {
             Menu {
                 branchMenuItems(repository, branch: branch)
             } label: {
-                BranchChipLabel(repository: repository, branch: branch)
+                BranchChipLabel(
+                    repository: repository, branch: branch,
+                    isHovered: isChipHovered, isPressed: isChipPressed
+                )
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .onHover { isChipHovered = $0 }
+            // Нажатие ловится жестом с нулевым порогом, а не кнопкой: Menu
+            // открывается по нажатию сам, и подменить его действие нечем —
+            // жест лишь наблюдает за фазой, ничего не перехватывая.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in isChipPressed = true }
+                    .onEnded { _ in isChipPressed = false }
+            )
+            // Правый клик открывает панель сразу, без промежуточного меню:
+            // пункт «Commits» уже есть в левом меню, и второе меню ради него
+            // же стоило бы лишнего клика на самом частом пути.
+            .background(RightClickCatcher { appState.isCommitsPanelOpen.toggle() })
             .help("Ветка: \(branch)" + (repository.isDirty ? " · есть незакоммиченные изменения" : ""))
         } else {
             // Место под индикатор занято всегда: появляющийся и исчезающий

@@ -7,14 +7,21 @@ public struct GitStatus: Equatable, Sendable {
     public let ahead: Int?
     /// Коммитов позади upstream; nil — upstream нет.
     public let behind: Int?
-    /// Есть ли незакоммиченные изменения, включая неотслеживаемые файлы.
-    public let isDirty: Bool
+    /// Сколько файлов затронуто: изменённых, добавленных, удалённых,
+    /// конфликтных и неотслеживаемых вместе.
+    public let changedFiles: Int
 
-    public init(branch: String?, ahead: Int?, behind: Int?, isDirty: Bool) {
+    /// Есть ли незакоммиченные изменения, включая неотслеживаемые файлы.
+    ///
+    /// Выводится из счётчика, а не хранится отдельно: два поля об одном факте
+    /// разошлись бы при первой же правке разбора.
+    public var isDirty: Bool { changedFiles > 0 }
+
+    public init(branch: String?, ahead: Int?, behind: Int?, changedFiles: Int) {
         self.branch = branch
         self.ahead = ahead
         self.behind = behind
-        self.isDirty = isDirty
+        self.changedFiles = changedFiles
     }
 
     /// Разбирает вывод `git status --porcelain=v2 --branch`.
@@ -26,7 +33,7 @@ public struct GitStatus: Equatable, Sendable {
         var oid: String?
         var ahead: Int?
         var behind: Int?
-        var isDirty = false
+        var changedFiles = 0
 
         for line in output.split(separator: "\n", omittingEmptySubsequences: true) {
             if line.hasPrefix("# branch.head ") {
@@ -49,14 +56,17 @@ public struct GitStatus: Equatable, Sendable {
                 // 1/2 — изменённое, u — конфликт, ? — неотслеживаемое.
                 // Игнорируемые (!) сюда не попадают: git их не печатает без
                 // --ignored, и считать их изменениями было бы неверно.
-                isDirty = true
+                //
+                // Строка «2» (переименование) несёт оба пути разом, но остаётся
+                // одним файлом: считай по путям — переименование давало бы два.
+                changedFiles += 1
             }
         }
 
         if branch == nil, let oid, oid.count >= 7, oid != "(initial)" {
             branch = String(oid.prefix(7))
         }
-        return GitStatus(branch: branch, ahead: ahead, behind: behind, isDirty: isDirty)
+        return GitStatus(branch: branch, ahead: ahead, behind: behind, changedFiles: changedFiles)
     }
 }
 
@@ -66,14 +76,17 @@ public struct RepositoryState: Equatable, Sendable {
     public let branch: String?
     public let ahead: Int?
     public let behind: Int?
-    public let isDirty: Bool
+    /// Сколько файлов затронуто; 0 — дерево чистое либо статус ещё не считали.
+    public let changedFiles: Int
 
-    public init(root: URL, branch: String?, ahead: Int? = nil, behind: Int? = nil, isDirty: Bool = false) {
+    public var isDirty: Bool { changedFiles > 0 }
+
+    public init(root: URL, branch: String?, ahead: Int? = nil, behind: Int? = nil, changedFiles: Int = 0) {
         self.root = root
         self.branch = branch
         self.ahead = ahead
         self.behind = behind
-        self.isDirty = isDirty
+        self.changedFiles = changedFiles
     }
 }
 

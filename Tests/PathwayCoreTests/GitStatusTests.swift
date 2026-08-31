@@ -61,6 +61,52 @@ struct GitStatusTests {
         #expect(GitStatus.parse(output).isDirty)
     }
 
+    @Test("считает изменённые файлы, а не только факт изменений")
+    func countsChangedFiles() {
+        let output = """
+        # branch.head main
+        1 .M N... 100644 100644 100644 abc def Sources/PathwayCore/BrowserModel.swift
+        1 M. N... 100644 100644 100644 abc def Sources/Pathway/BranchChip.swift
+        ? docs/новая-спека.md
+        """
+        // Число, а не признак: чип показывает «сколько», и вывести это из
+        // булева isDirty нельзя.
+        #expect(GitStatus.parse(output).changedFiles == 3)
+    }
+
+    @Test("чистое дерево даёт ноль изменённых файлов")
+    func cleanTreeHasNoChangedFiles() {
+        let output = """
+        # branch.head main
+        # branch.ab +0 -0
+        """
+        #expect(GitStatus.parse(output).changedFiles == 0)
+    }
+
+    @Test("переименование считается одним файлом, а не двумя")
+    func renameCountsAsOneFile() {
+        // Строка «2» несёт оба пути разом, разделённые табуляцией: считай по
+        // путям — переименование удваивало бы счётчик на ровном месте.
+        let output = """
+        # branch.head main
+        2 R. N... 100644 100644 100644 abc def R100 новое\tстарое
+        """
+        #expect(GitStatus.parse(output).changedFiles == 1)
+    }
+
+    @Test("служебные строки заголовка в счётчик не попадают")
+    func headerLinesAreNotCounted() {
+        // Заголовки начинаются с «#», а «1», «2», «u», «?» — коды состояний.
+        // Сравнение по первому символу без отсечения «#» посчитало бы их тоже.
+        let output = """
+        # branch.oid 1234567
+        # branch.head main
+        # branch.upstream origin/main
+        # branch.ab +1 -0
+        """
+        #expect(GitStatus.parse(output).changedFiles == 0)
+    }
+
     @Test("конфликт слияния делает дерево изменённым")
     func conflictMakesDirty() {
         let output = """

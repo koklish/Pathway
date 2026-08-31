@@ -414,8 +414,16 @@ struct GitTargetTests {
             state.browser.gitPush(at: clicked)
             await state.browser.waitForOperation()
 
-            #expect(git.directories.contains { $0?.path == clicked.path })
-            #expect(git.directories.contains { $0?.path == selected.url.path } == false)
+            // По самой операции, а не по любому обращению к папке: колонка
+            // «Ветка» досчитывает статусы всех репозиториев списка, и
+            // «Выделенный» git видит законно — за счётчиком правок, а не за
+            // push, который туда уйти не должен.
+            let pushes = zip(git.calls, git.directories)
+                .filter { $0.0.first == "push" }
+                .map(\.1)
+
+            #expect(pushes.contains { $0?.path == clicked.path })
+            #expect(pushes.contains { $0?.path == selected.url.path } == false)
         }
     }
 

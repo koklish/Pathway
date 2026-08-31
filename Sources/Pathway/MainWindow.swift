@@ -7,6 +7,18 @@ struct MainWindow: View {
     @State private var showConnectServer = false
     @State private var connection = ServerConnection()
     @State private var connectModel: ConnectServerModel
+    /// Ширина панели коммитов. Во вью, а не в Core: размеров Core не считает.
+    /// Переживает закрытие панели — иначе каждое открытие начиналось бы с
+    /// подгонки ширины заново.
+    @AppStorage("commitsPanelWidth") private var commitsPanelWidth: Double = 372
+    /// Ширина во время перетаскивания; nil — границу не тянут.
+    ///
+    /// Отдельно от сохранённой: писать в @AppStorage на каждый кадр значит
+    /// синхронно обращаться к UserDefaults полсотни раз в секунду.
+    @State private var draggedWidth: CGFloat?
+
+    /// Ширина, с которой рисуется панель.
+    private var panelWidth: CGFloat { draggedWidth ?? CGFloat(commitsPanelWidth) }
     /// Сервис обновлений приходит из App: тот же экземпляр видит пункт меню.
     let updates: UpdateService
     /// Панель живёт в AppState: до неё должны дотягиваться команды главного меню.
@@ -53,22 +65,7 @@ struct MainWindow: View {
                 AddressBarView(model: model, search: appState.search)
                     .onboardingTarget(.addressBar)
                 Divider()
-                if appState.search.isActive {
-                    SearchResultsView(search: appState.search, model: model)
-                } else {
-                    FileListView(
-                        model: model, actions: actions, appState: appState,
-                        renamingItem: $state.pendingRename
-                    ) { items in
-                        appState.pendingCompress = items
-                    }
-                    // Своя таблица на вкладку. Без этого NSScrollView был бы
-                    // один на всех, и переключение вкладок роняло бы позицию
-                    // скролла в ту, что осталась от прошлой папки: скролл
-                    // принадлежит вью, а не модели, и переприсваиванием model
-                    // не восстанавливается.
-                    .id(appState.tabs.active.id)
-                }
+                contentArea(renamingItem: $state.pendingRename)
                 Divider()
                 StatusBarView(model: model, appState: appState)
             }
@@ -109,6 +106,15 @@ struct MainWindow: View {
             // пути, ведущие не туда, куда пришли.
             .onChange(of: model.pane.path) { _, _ in
                 if appState.search.isActive { appState.search.cancel() }
+            }
+            // Панель закрывается при уходе из репозитория: показывать историю
+            // проекта, из которого вышли, значило бы врать о том, где человек
+            // находится. Ширина при этом сохраняется — она в @AppStorage.
+            .onChange(of: model.currentRepository?.root) { _, root in
+                // Кликнутая цель сбрасывается при любом переходе: она
+                // относилась к строке того списка, которого уже нет на экране.
+                appState.commitsPanelRepository = nil
+                if root == nil { appState.isCommitsPanelOpen = false }
             }
         }
         // Обучающий тур поверх всего окна. Якоря целей собраны из дочерних вью
@@ -294,6 +300,73 @@ struct MainWindow: View {
         } message: {
             Text(actions.errorMessage ?? "")
         }
+    }
+
+    /// Список файлов и панель коммитов рядом.
+    ///
+    /// Отдельным методом, а не в теле body: с ним выражение окна перестаёт
+    /// проверяться компилятором за разумное время — SwiftUI собирает тип всей
+    /// иерархии целиком, и каждая вложенная ветка умножает работу.
+    @ViewBuilder
+    private func contentArea(renamingItem: Binding<URL?>) -> some View {
+        HStack(spacing: 0) {
+            if appState.search.isActive {
+                SearchResultsView(search: appState.search, model: model)
+            } else {
+                FileListView(
+                    model: model, actions: actions, appState: appState,
+                    renamingItem: renamingItem
+                ) { items in
+                    appState.pendingCompress = items
+                }
+                // Своя таблица на вкладку. Без этого NSScrollView был бы один на
+                // всех, и переключение вкладок роняло бы позицию скролла в ту,
+                // что осталась от прошлой папки: скролл принадлежит вью, а не
+                // модели, и переприсваиванием model не восстанавливается.
+                .id(appState.tabs.active.id)
+            }
+
+            // Панель коммитов — соседом списка, а не оверлеем: она отнимает
+            // ширину, и список обязан пересчитать колонки, а не уехать под неё.
+            // Кликнутый репозиторий годится и когда текущая папка не
+            // репозиторий: главный сценарий — стоя в папке с проектами,
+            // открыть историю одного из них.
+            if appState.isCommitsPanelOpen,
+               appState.commitsPanelRepository != nil || model.currentRepository != nil {
+                Divider()
+                CommitsPanel(
+                    model: appState.commits,
+                    browser: model,
+                    repository: appState.commitsPanelRepository
+                ) {
+                    appState.isCommitsPanelOpen = false
+                }
+                .frame(width: panelWidth)
+                .transition(.move(edge: .trailing))
+                .overlay(alignment: .leading) {
+                    PanelResizeHandle(
+                        width: $draggedWidth, initialWidth: CGFloat(commitsPanelWidth)
+                    ) { final in
+                        // Запись в настройки — один раз по отпусканию кнопки,
+                        // а не на каждый кадр: @AppStorage синхронно пишет в
+                        // UserDefaults, и полсотни записей в секунду посреди
+                        // перетаскивания и давали рывки.
+                        commitsPanelWidth = Double(final)
+                        draggedWidth = nil
+                    }
+                }
+            }
+        }
+        // Система координат для ручек изменения размера объявлена на всей
+        // области — она неподвижна, в отличие от самих панелей. Мерить сдвиг
+        // курсора в координатах панели нельзя: она едет вместе с ручкой, и
+        // жест получал бы обратную связь от собственного результата.
+        .coordinateSpace(name: resizeCoordinateSpace)
+        // Анимация только на появление и скрытие панели. Без явного отключения
+        // она захватывает и .frame(width:), и каждый кадр перетаскивания
+        // границы уезжал бы к новой ширине с задержкой.
+        .animation(.easeOut(duration: 0.18), value: appState.isCommitsPanelOpen)
+        .animation(nil, value: panelWidth)
     }
 
     // MARK: - Кнопка серверов

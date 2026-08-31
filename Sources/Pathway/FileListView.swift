@@ -284,6 +284,9 @@ struct FileListView: NSViewRepresentable {
         // получить новую высоту строки, иначе список моргнул бы дважды.
         context.coordinator.applyScaleIfChanged()
         context.coordinator.reloadIfContentChanged()
+        // После reloadIfContentChanged: тот перестраивает все ячейки, и
+        // перерисовывать колонку следом было бы двойной работой на одном кадре.
+        context.coordinator.reloadBranchColumnIfStatusesChanged()
         context.coordinator.syncSelection()
         // После syncSelection: прокрутка ищет строку в уже синхронизированной
         // таблице, а выделение к этому моменту стоит.
@@ -419,17 +422,28 @@ struct FileListView: NSViewRepresentable {
             }
         }
 
-        var branch: String? {
+        /// Что показывать. Целиком, а не отдельно имя и счётчик: они приезжают
+        /// разными ступенями загрузки, и раздельные свойства заставили бы
+        /// пересобирать Content дважды на строку.
+        var content: BranchChipView.Content? {
             didSet {
-                guard branch != oldValue else { return }
-                chip.content = branch.map {
-                    // Статус в списке не считается: он стоит git status на
-                    // проект, а это до 21 мс на папку на сетевом томе.
-                    BranchChipView.Content(branch: $0, isDetached: GitRepository.isDetached($0))
-                }
-                chip.isHidden = branch == nil
+                guard content != oldValue else { return }
+                chip.content = content
+                chip.isHidden = content == nil
                 needsLayout = true
             }
+        }
+
+        /// Показать меню репозитория этой строки. Ставит координатор — он один
+        /// знает и модель, и обработчики пунктов.
+        var onClick: (() -> NSMenu?)? {
+            get { chip.onClick }
+            set { chip.onClick = newValue }
+        }
+
+        var onMenuClosed: (() -> Void)? {
+            get { chip.onMenuClosed }
+            set { chip.onMenuClosed = newValue }
         }
 
         init(identifier: NSUserInterfaceItemIdentifier) {
@@ -486,6 +500,14 @@ struct FileListView: NSViewRepresentable {
             let metadataLoaded: Bool
         }
 
+        /// Счётчики правок, показанные в колонке «Ветка» на прошлом проходе.
+        ///
+        /// Отдельно от подписи содержимого: статусы доезжают по одному
+        /// репозиторию, и полный reloadData на каждый ответ git рвал бы скролл
+        /// столько раз, сколько проектов в папке. Здесь перерисовывается одна
+        /// колонка — остальные ячейки и позиция прокрутки не трогаются вовсе.
+        private var renderedStatuses: [URL: Int] = [:]
+
         /// SwiftUI дёргает updateNSView на любое изменение модели, включая выделение.
         /// Полный reloadData сбрасывает ячейки и рвёт скролл, поэтому делаем его
         /// только когда содержимое действительно изменилось.
@@ -494,6 +516,31 @@ struct FileListView: NSViewRepresentable {
             guard signature != renderedSignature else { return }
             renderedSignature = signature
             table?.reloadData()
+            // Подпись статусов сбрасывается вместе с содержимым: после
+            // reloadData ячейки построены заново, и сравнивать их с прежним
+            // набором не с чем.
+            renderedStatuses = [:]
+        }
+
+        /// Перерисовывает колонку «Ветка», если досчитались новые статусы.
+        func reloadBranchColumnIfStatusesChanged() {
+            guard let table, let column = table.tableColumns
+                .firstIndex(where: { $0.identifier == Column.branch.identifier })
+            else { return }
+
+            var statuses: [URL: Int] = [:]
+            for item in model.items where item.branch != nil {
+                if let status = model.rowStatus(for: item.url) {
+                    statuses[item.url] = status.changedFiles
+                }
+            }
+            guard statuses != renderedStatuses else { return }
+            renderedStatuses = statuses
+
+            table.reloadData(
+                forRowIndexes: IndexSet(integersIn: 0..<table.numberOfRows),
+                columnIndexes: IndexSet(integer: column)
+            )
         }
 
         /// Применяет масштаб к таблице: высота строк и перестройка ячеек.
@@ -598,8 +645,31 @@ struct FileListView: NSViewRepresentable {
                 let cell = tableView.makeView(withIdentifier: column.identifier, owner: self) as? BranchChipCell
                     ?? BranchChipCell(identifier: column.identifier)
                 cell.scale = appState.scale
-                cell.branch = item.branch
+                cell.content = item.branch.map { branch in
+                    // Счётчик правок приходит четвёртой ступенью загрузки и до
+                    // неё равен нулю: git status — запуск процесса, до 21 мс на
+                    // репозиторий, и ждать его ради колонки нельзя. Имя ветки
+                    // видно сразу, число доезжает следом.
+                    let status = model.rowStatus(for: item.url)
+                    return BranchChipView.Content(
+                        branch: branch,
+                        isDetached: GitRepository.isDetached(branch),
+                        changedFiles: status?.changedFiles ?? 0,
+                        ahead: status?.ahead,
+                        behind: status?.behind
+                    )
+                }
                 cell.alphaValue = model.pane.isCut(item.url) ? 0.5 : 1.0
+                // Строку берём из URL в момент клика, а не из row: ячейки
+                // переиспользуются при прокрутке, и замыкание, замкнувшее номер
+                // строки, открыло бы меню чужого репозитория.
+                let url = item.url
+                cell.onClick = { [weak self] in
+                    guard let self, let row = model.items.firstIndex(where: { $0.url == url })
+                    else { return nil }
+                    return branchChipMenu(forRow: row)
+                }
+                cell.onMenuClosed = { [weak self] in self?.clearChipRepository() }
                 return cell
             }
 
@@ -1045,13 +1115,7 @@ struct FileListView: NSViewRepresentable {
             let branch = known ?? GitRepository.branch(at: repository)
 
             let submenu = NSMenu()
-            add(to: submenu, .gitPull, busy ? nil : #selector(menuGitPull))
-            add(to: submenu, .gitPush, busy ? nil : #selector(menuGitPush))
-            add(to: submenu, .gitSync, busy ? nil : #selector(menuGitSync))
-            add(to: submenu, .gitFetch, busy ? nil : #selector(menuGitFetch))
-            addBranches(to: submenu, repository: repository, busy: busy)
-            submenu.addItem(.separator())
-            add(to: submenu, .gitCopyBranch, #selector(menuGitCopyBranch))
+            fillBranchMenu(submenu, repository: repository, busy: busy)
 
             // Без ветки — слово «Репозиторий»: отделённая голова и нечитаемый
             // HEAD оставляют операции осмысленными, и пункт без названия был бы
@@ -1064,6 +1128,52 @@ struct FileListView: NSViewRepresentable {
                     : "point.topleft.down.to.point.bottomright.curvepath"
             )
             menu.addItem(parent)
+        }
+
+        /// Наполняет меню операциями репозитория.
+        ///
+        /// Отдельно от addBranchSubmenu: тот же набор нужен и подменю правого
+        /// клика по строке, и меню, которое открывает клик прямо по чипу. Две
+        /// сборки разошлись бы при первой же новой операции — в одном месте
+        /// пункт появился бы, в другом нет.
+        private func fillBranchMenu(_ menu: NSMenu, repository: URL, busy: Bool) {
+            // Первым и отдельно от операций: пункт открывает панель, а не
+            // обращается к серверу, — в одном ряду с Pull и Push он читался бы
+            // как ещё одна операция. Живой и во время операции: панель смотрит.
+            add(to: menu, .gitCommits, #selector(menuGitCommits))
+            menu.addItem(.separator())
+            add(to: menu, .gitPull, busy ? nil : #selector(menuGitPull))
+            add(to: menu, .gitPush, busy ? nil : #selector(menuGitPush))
+            add(to: menu, .gitSync, busy ? nil : #selector(menuGitSync))
+            add(to: menu, .gitFetch, busy ? nil : #selector(menuGitFetch))
+            addBranches(to: menu, repository: repository, busy: busy)
+            menu.addItem(.separator())
+            add(to: menu, .gitCopyBranch, #selector(menuGitCopyBranch))
+        }
+
+        /// Меню репозитория для клика прямо по чипу в колонке «Ветка».
+        ///
+        /// Готовое меню, а не показ на месте: вызывающему нужно знать, есть ли
+        /// что показывать, — на строке без ветки клик обязан вести себя как
+        /// обычный клик по строке, а не открывать пустое меню.
+        func branchChipMenu(forRow row: Int) -> NSMenu? {
+            guard row >= 0, row < model.items.count else { return nil }
+            let item = model.items[row]
+            guard item.isDirectory, item.branch != nil else { return nil }
+
+            let menu = NSMenu()
+            fillBranchMenu(menu, repository: item.url, busy: model.isBusy)
+            chipRepository = item.url
+            return menu
+        }
+
+        /// Снимает цель, выставленную меню чипа.
+        ///
+        /// Отдельным вызовом после закрытия меню, а не в самом branchChipMenu:
+        /// пункты выполняются уже после того, как popUp вернул управление, и
+        /// сброс до этого момента увёл бы операцию не в тот репозиторий.
+        func clearChipRepository() {
+            chipRepository = nil
         }
 
         /// Недавние ветки и вход в полный список.
@@ -1221,12 +1331,25 @@ struct FileListView: NSViewRepresentable {
             return [item]
         }
 
+        /// Репозиторий меню, открытого кликом по чипу; nil — меню не от чипа.
+        ///
+        /// Держится, пока меню на экране: NSMenu показывается модально, и
+        /// сбросить цель можно только после его закрытия — иначе обработчик
+        /// пункта, вызванный уже после, увидел бы nil.
+        private var chipRepository: URL?
+
         /// Репозиторий, к которому относятся git-пункты меню.
         ///
         /// Кликнутая папка важнее текущей: в списке проектов правый клик по
         /// строке должен работать именно с ней. Внутри репозитория клик по
         /// файлу цели не меняет — операция затрагивает репозиторий целиком.
         private var menuRepository: URL? {
+            // Меню, открытое кликом по чипу, знает свой репозиторий точно:
+            // clickedRow при левой кнопке AppKit не выставляет, и без явной
+            // цели операции ушли бы в репозиторий текущей папки — то есть не
+            // туда, по чему кликнули.
+            if let chipRepository { return chipRepository }
+
             // Спрашиваем файловую систему, а не смотрим на item.branch: ветка
             // заполняется вторым проходом загрузки, и до его конца пункты
             // пропадали бы из меню, появляясь через секунду сами собой. На
@@ -1249,6 +1372,13 @@ struct FileListView: NSViewRepresentable {
         @objc private func menuGitPush() { model.gitPush(at: menuRepository) }
         @objc private func menuGitSync() { model.gitSync(at: menuRepository) }
         @objc private func menuGitCopyBranch() { model.gitCopyBranch(at: menuRepository) }
+
+        /// Панель открывается для кликнутого репозитория, а не для текущего:
+        /// стоя в папке с проектами, человек кликает по одному из них и ждёт
+        /// историю именно его.
+        @objc private func menuGitCommits() {
+            appState.openCommitsPanel(for: menuRepository)
+        }
 
         @objc private func menuSwitchBranch(_ sender: NSMenuItem) {
             guard let branch = sender.representedObject as? Branch else { return }

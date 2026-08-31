@@ -67,6 +67,8 @@ struct AppCommands: Commands {
         // файловых, а меню с понятным именем сразу говорит, что приложение
         // умеет работать с репозиториями.
         CommandMenu("Репозиторий") {
+            item(.gitCommits)
+            Divider()
             item(.gitClone)
             Divider()
             item(.gitFetch)
