@@ -88,6 +88,9 @@ struct AppCommands: Commands {
             item(.nextTab)
             item(.previousTab)
             Divider()
+            item(.toggleSplit)
+            item(.focusOtherPane)
+            Divider()
             item(.toggleFavorite)
         }
     }
@@ -132,6 +135,8 @@ struct AppCommands: Commands {
                 : "Добавить в избранное"
         case .pinTab:
             return state.tabs.active.isPinned ? "Открепить вкладку" : "Закрепить вкладку"
+        case .toggleSplit:
+            return state.panes.isSplit ? "Убрать вторую панель" : "Разделить окно"
         default:
             return command.title
         }

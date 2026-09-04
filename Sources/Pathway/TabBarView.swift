@@ -1,19 +1,28 @@
 import PathwayCore
 import SwiftUI
 
-/// Полоса вкладок между тулбаром и адресной строкой.
+/// Полоса вкладок панели, над её адресной строкой.
+///
+/// Одна на панель, а не на окно: при сплите каждая половина ведёт свой набор
+/// вкладок, и общая полоса показывала бы только активную группу.
 ///
 /// На SwiftUI, а не на NSTableView, в отличие от списка файлов: вкладок
 /// единицы, и причины, уведшие FileListView в AppKit — тысячи строк и
 /// стоимость ячейки, — здесь отсутствуют.
 struct TabBarView: View {
     let tabs: TabsModel
+    /// Сторона, которой принадлежит полоса, и обе группы вкладок: нужны для
+    /// переноса вкладки перетаскиванием в соседнюю панель.
+    let group: PaneGroup
+    let panes: PanesModel
     /// Вкладка, над которой держат курсор: только у неё видно крестик, иначе
     /// полоса пестрила бы кнопками закрытия.
     @State private var hovered: UUID?
-    /// Перетаскиваемая вкладка. Хранится здесь, а не в модели: это состояние
-    /// жеста, живущее до отпускания кнопки мыши.
-    @State private var dragging: UUID?
+    /// Перетаскиваемая вкладка. Биндинг, а не свой @State: состояние общее для
+    /// полос обеих панелей, иначе принимающая сторона не знала бы, что несут,
+    /// и drop на ней не проходил вовсе. Хранится вне модели, потому что это
+    /// состояние жеста, живущее до отпускания кнопки мыши.
+    @Binding var dragging: UUID?
 
     var body: some View {
         GeometryReader { geometry in
@@ -37,13 +46,18 @@ struct TabBarView: View {
                             tabItem(tab, width: layout.width(for: tab))
                                 .onDrag {
                                     dragging = tab.id
-                                    // Перетаскивание внутри полосы: содержимое провайдера
-                                    // не используется, порядок меняет onDrop по dragging.
+                                    // Содержимое провайдера не используется:
+                                    // и перестановку внутри полосы, и перенос
+                                    // между панелями делегаты делают по общему
+                                    // биндингу dragging.
                                     return NSItemProvider(object: tab.id.uuidString as NSString)
                                 }
                                 .onDrop(
                                     of: [.text],
-                                    delegate: TabDropDelegate(target: tab.id, tabs: tabs, dragging: $dragging)
+                                    delegate: TabDropDelegate(
+                                        target: tab.id, tabs: tabs, group: group,
+                                        panes: panes, dragging: $dragging
+                                    )
                                 )
                         }
                         // Пока вкладки помещаются, кнопка едет сразу за последней:
@@ -68,6 +82,16 @@ struct TabBarView: View {
                         .padding(.bottom, 4)
                 }
             }
+            // Пустое место полосы — тоже цель сброса: вкладка из другой панели,
+            // отпущенная не над конкретной вкладкой, встаёт в конец. Свою
+            // полосу это не трогает: перестановку внутри неё обслуживают
+            // делегаты самих вкладок.
+            .onDrop(
+                of: [.text],
+                delegate: TabBarEndDropDelegate(
+                    tabs: tabs, group: group, panes: panes, dragging: $dragging
+                )
+            )
         }
         .frame(height: 36)
         // Фон полосы притемнён вручную поверх системного, а не взят из
@@ -119,7 +143,14 @@ struct TabBarView: View {
         .frame(height: 34)
         .background(tabBackground(isActive: isActive, isHovered: tab.id == hovered))
         .contentShape(.rect)
-        .onTapGesture { tabs.select(id: tab.id) }
+        .onTapGesture {
+            // Сначала фокус панели, потом выбор вкладки: вкладка принадлежит
+            // своей полосе, и клик по ней в неактивной панели обязан
+            // переключить и панель — иначе ⌘V ушёл бы в соседнюю половину
+            // при выбранной здесь вкладке.
+            panes.focus(group)
+            tabs.select(id: tab.id)
+        }
         .onHover { inside in
             hovered = inside ? tab.id : (hovered == tab.id ? nil : hovered)
         }
@@ -238,6 +269,7 @@ struct TabBarView: View {
 
     private var newTabButton: some View {
         Button {
+            panes.focus(group)
             tabs.open(tabs.active.browser.pane.path, activate: true)
         } label: {
             Image(systemName: "plus")
@@ -404,18 +436,33 @@ private struct TabShape: InsettableShape {
     }
 }
 
-/// Перестановка вкладок перетаскиванием.
+/// Перестановка вкладок перетаскиванием — внутри своей полосы и перенос в
+/// соседнюю панель.
 private struct TabDropDelegate: DropDelegate {
     let target: UUID
     let tabs: TabsModel
+    let group: PaneGroup
+    let panes: PanesModel
     @Binding var dragging: UUID?
 
     func dropEntered(info: DropInfo) {
-        guard let dragging, dragging != target,
-              let from = tabs.tabs.firstIndex(where: { $0.id == dragging }),
-              let to = tabs.tabs.firstIndex(where: { $0.id == target })
-        else { return }
-        tabs.move(from: from, to: to)
+        guard let dragging, dragging != target else { return }
+        if tabs.tabs.contains(where: { $0.id == dragging }) {
+            // Своя полоса: порядок меняется прямо во время перетаскивания.
+            guard let from = tabs.tabs.firstIndex(where: { $0.id == dragging }),
+                  let to = tabs.tabs.firstIndex(where: { $0.id == target })
+            else { return }
+            tabs.move(from: from, to: to)
+        } else {
+            // Чужая полоса: вкладка переезжает между панелями тем же живым
+            // перетаскиванием, а не по отпусканию кнопки — иначе до конца
+            // жеста человек не видел бы, куда именно она встанет. После
+            // переезда вкладка уже своя, и дальнейшее наведение по полосе
+            // обслуживает ветка выше. Последнюю вкладку группы moveTab не
+            // отдаст сам — группа без вкладок существовать не может.
+            let index = tabs.tabs.firstIndex(where: { $0.id == target })
+            panes.moveTab(id: dragging, from: group.other, to: group, at: index)
+        }
     }
 
     func performDrop(info: DropInfo) -> Bool {
@@ -425,5 +472,33 @@ private struct TabDropDelegate: DropDelegate {
 
     /// Подсветка цели не нужна: порядок меняется прямо во время перетаскивания,
     /// и вкладка уже стоит на новом месте.
+    func validateDrop(info: DropInfo) -> Bool { dragging != nil }
+}
+
+/// Сброс на пустое место полосы, мимо вкладок.
+///
+/// Отдельный делегат, а не ветка в `TabDropDelegate`: тот привязан к
+/// конкретной вкладке-цели и про пустоту справа от неё не узнает никогда.
+private struct TabBarEndDropDelegate: DropDelegate {
+    let tabs: TabsModel
+    let group: PaneGroup
+    let panes: PanesModel
+    @Binding var dragging: UUID?
+
+    func dropEntered(info: DropInfo) {
+        // Своя вкладка на пустом месте своей полосы ничего не меняет — она и
+        // так в списке; перестановкой занимаются делегаты вкладок. Реагируем
+        // только на прибывшую из другой панели: она встаёт в конец.
+        guard let dragging,
+              !tabs.tabs.contains(where: { $0.id == dragging })
+        else { return }
+        panes.moveTab(id: dragging, from: group.other, to: group)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
+    }
+
     func validateDrop(info: DropInfo) -> Bool { dragging != nil }
 }

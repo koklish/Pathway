@@ -9,8 +9,17 @@ import Observation
 @Observable
 @MainActor
 public final class AppState {
-    /// Открытые вкладки. Активная и есть панель, с которой работают команды.
-    public let tabs: TabsModel
+    /// Панели окна: левая группа вкладок, правая при включённом сплите и
+    /// признак активной.
+    public let panes: PanesModel
+
+    /// Вкладки активной группы. Вычисляемое свойство по той же причине, по
+    /// которой вычисляемым сделан `browser`: реестр команд, сайдбар, список
+    /// файлов и полоса вкладок обращаются к вкладкам через него, и появление
+    /// второй группы не потребовало править ни одно из этих мест — команда,
+    /// открывающая вкладку, обязана открыть её в той панели, где человек
+    /// работает, а это ровно активная группа.
+    public var tabs: TabsModel { panes.active }
     public let favorites: FavoritesStore
     /// Действия над папкой, общие для сайдбара и списка файлов.
     public let folderActions: FolderActions
@@ -136,14 +145,18 @@ public final class AppState {
     /// каждой смене выделения — панель следует за ним, пока открыта.
     public var pendingQuickLook = false
 
+    /// `tabs` принимается готовой моделью ради тестов: они собирают вкладки на
+    /// временных папках со своим UserDefaults. Такая модель становится левой
+    /// группой — сплит в тестах, которым он не нужен, просто не открывается.
     public init(
         path: URL = FileManager.default.homeDirectoryForCurrentUser,
         tabs: TabsModel? = nil,
+        panes: PanesModel? = nil,
         favorites: FavoritesStore = FavoritesStore(),
         terminal: TerminalLauncher = TerminalLauncher(),
         onboarding: OnboardingModel = OnboardingModel()
     ) {
-        self.tabs = tabs ?? TabsModel(path: path)
+        self.panes = panes ?? PanesModel(path: path, left: tabs)
         self.favorites = favorites
         self.folderActions = FolderActions(favorites: favorites, terminal: terminal)
         self.onboarding = onboarding

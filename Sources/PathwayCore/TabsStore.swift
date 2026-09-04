@@ -23,15 +23,31 @@ public final class TabsStore {
     /// писали только его.
     private let legacyPathsKey = "tabs.paths"
     /// Новый формат — массив словарей с путём и флагом.
-    private let itemsKey = "tabs.items"
-    private let activeKey = "tabs.activeIndex"
+    private let itemsKey: String
+    private let activeKey: String
+    private let group: PaneGroup
     private let sortKeyKey = "sort.key"
     private let sortAscendingKey = "sort.ascending"
     private let listScaleKey = "list.scale"
     private let columnWidthsKey = "columns.widths"
 
-    public init(defaults: UserDefaults = .standard) {
+    /// Хранилище состава вкладок одной группы панелей.
+    ///
+    /// Ключи состава разведены по группам суффиксом, а настройки — сортировка,
+    /// масштаб, ширины колонок — общие: они приложенческие, и своя копия у
+    /// каждой группы разошлась бы при первом же изменении, ровно как разошлись
+    /// бы два хранилища showHiddenFiles.
+    ///
+    /// Левая группа намеренно пишет в ключи без суффикса — те же, что писала
+    /// версия без сплита. Иначе сессия, накопленная до обновления, при первом
+    /// запуске новой версии оказалась бы прочитана в никуда, и человек потерял
+    /// бы все открытые вкладки.
+    public init(defaults: UserDefaults = .standard, group: PaneGroup = .left) {
         self.defaults = defaults
+        self.group = group
+        let suffix = group == .left ? "" : ".\(group.storageSuffix)"
+        self.itemsKey = "tabs.items\(suffix)"
+        self.activeKey = "tabs.activeIndex\(suffix)"
     }
 
     // MARK: - Сортировка
@@ -104,6 +120,16 @@ public final class TabsStore {
         defaults.removeObject(forKey: legacyPathsKey)
     }
 
+    /// Стирает сохранённый состав вкладок группы.
+    ///
+    /// Нужен при выключении сплита: вкладки правой группы переезжают в левую и
+    /// записываются её хранилищем, а оставленная здесь копия при следующем
+    /// включении сплита воскресила бы те же вкладки второй раз.
+    public func clear() {
+        defaults.removeObject(forKey: itemsKey)
+        defaults.removeObject(forKey: activeKey)
+    }
+
     /// Уцелевшие вкладки и активный индекс. Мёртвые пути отбрасываются молча:
     /// отключённый сетевой том здесь норма, а не ошибка, и алерт «3 вкладки не
     /// восстановлены» на каждом старте после работы с сервером раздражал бы.
@@ -136,6 +162,10 @@ public final class TabsStore {
                 )
             }
         }
+        // Старую сессию читает только левая группа: ключ у формата один на
+        // всех, и правая подхватила бы те же самые вкладки — после обновления
+        // человек увидел бы свой набор продублированным в обе панели.
+        guard group == .left else { return [] }
         let legacy = defaults.stringArray(forKey: legacyPathsKey) ?? []
         return legacy.map { TabRecord(path: URL(fileURLWithPath: $0)) }
     }

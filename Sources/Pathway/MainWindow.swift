@@ -19,6 +19,28 @@ struct MainWindow: View {
 
     /// Ширина, с которой рисуется панель.
     private var panelWidth: CGFloat { draggedWidth ?? CGFloat(commitsPanelWidth) }
+
+    /// Доля окна под левой панелью сплита. Долей, а не точками: окно меняют
+    /// размер, и запомненная ширина в точках при сужении оставила бы правой
+    /// панели пару сантиметров.
+    @AppStorage("panes.splitFraction") private var splitFraction: Double = 0.5
+    /// Доля во время перетаскивания; nil — границу не тянут. Отдельно от
+    /// сохранённой по той же причине, что и у панели коммитов: писать в
+    /// @AppStorage на каждый кадр значит синхронно дёргать UserDefaults.
+    @State private var draggedFraction: CGFloat?
+
+    /// Доля, с которой рисуются панели.
+    private var paneFraction: CGFloat { draggedFraction ?? CGFloat(splitFraction) }
+
+    /// Минимальная ширина панели: уже неё список файлов теряет колонки и
+    /// перестаёт быть списком.
+    private let minPaneWidth: CGFloat = 260
+    private let dividerWidth: CGFloat = 6
+    /// Перетаскиваемая вкладка, общая для полос обеих панелей: состояние жеста
+    /// держится здесь, чтобы принимающая полоса видела, что именно несут, —
+    /// свой @State у каждой полосы сделал бы перенос между панелями
+    /// невозможным.
+    @State private var draggingTab: UUID?
     /// Сервис обновлений приходит из App: тот же экземпляр видит пункт меню.
     let updates: UpdateService
     /// Панель живёт в AppState: до неё должны дотягиваться команды главного меню.
@@ -60,13 +82,14 @@ struct MainWindow: View {
             .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 340)
         } detail: {
             VStack(spacing: 0) {
-                TabBarView(tabs: appState.tabs)
-                Divider()
-                AddressBarView(model: model, search: appState.search)
-                    .onboardingTarget(.addressBar)
-                Divider()
+                // Полос вкладок здесь нет: у каждой панели своя, внутри
+                // PaneView, — общая показывала бы только активную группу, и
+                // при сплите вкладки второй половины пропадали бы из виду.
                 contentArea(renamingItem: $state.pendingRename)
                 Divider()
+                // Статус-бар один на окно и показывает активную панель: две
+                // строки состояния под каждой половиной заняли бы вдвое больше
+                // места ради счётчика, который читают краем глаза.
                 StatusBarView(model: model, appState: appState)
             }
             // Тост оверлеем, а не строкой в VStack: встроенный в поток, он
@@ -143,6 +166,10 @@ struct MainWindow: View {
             // macOS 15, где этого API нет.
             if #available(macOS 26, *) {
                 ToolbarItem(placement: .primaryAction) {
+                    splitButton
+                }
+                .sharedBackgroundVisibility(.hidden)
+                ToolbarItem(placement: .primaryAction) {
                     serverMenuButton
                 }
                 .sharedBackgroundVisibility(.hidden)
@@ -156,6 +183,9 @@ struct MainWindow: View {
                 .sharedBackgroundVisibility(.hidden)
             } else {
                 ToolbarItem(placement: .primaryAction) {
+                    splitButton
+                }
+                ToolbarItem(placement: .primaryAction) {
                     serverMenuButton
                 }
                 ToolbarItem(placement: .primaryAction) {
@@ -167,10 +197,14 @@ struct MainWindow: View {
             }
         }
         .onAppear {
-            // Читает папку активной вкладки. Остальные — восстановленные из
-            // прошлой сессии — ждут своего показа: обходить каталоги всех
-            // сразу значило бы на сетевом диске десять обходов на старте.
-            appState.tabs.loadActive()
+            // Читает папку активной вкладки каждой группы. Остальные —
+            // восстановленные из прошлой сессии — ждут своего показа:
+            // обходить каталоги всех сразу значило бы на сетевом диске десять
+            // обходов на старте. Через panes, а не tabs: при восстановленном
+            // сплите правая панель видна сразу, а через tabs (активную группу)
+            // до неё загрузка не дошла бы никогда — вторая группа грузится
+            // лениво по фокусу, которого при старте не получает.
+            appState.panes.loadActive()
             // Подключённый том открываем новой вкладкой, а не вместо текущей:
             // папка, из которой пошли подключаться, должна остаться на месте.
             connectModel.onMounted = { mountPoint in
@@ -309,22 +343,9 @@ struct MainWindow: View {
     /// иерархии целиком, и каждая вложенная ветка умножает работу.
     @ViewBuilder
     private func contentArea(renamingItem: Binding<URL?>) -> some View {
+        @Bindable var state = appState
         HStack(spacing: 0) {
-            if appState.search.isActive {
-                SearchResultsView(search: appState.search, model: model)
-            } else {
-                FileListView(
-                    model: model, actions: actions, appState: appState,
-                    renamingItem: renamingItem
-                ) { items in
-                    appState.pendingCompress = items
-                }
-                // Своя таблица на вкладку. Без этого NSScrollView был бы один на
-                // всех, и переключение вкладок роняло бы позицию скролла в ту,
-                // что осталась от прошлой папки: скролл принадлежит вью, а не
-                // модели, и переприсваиванием model не восстанавливается.
-                .id(appState.tabs.active.id)
-            }
+            panes(renamingItem: renamingItem, state: state)
 
             // Панель коммитов — соседом списка, а не оверлеем: она отнимает
             // ширину, и список обязан пересчитать колонки, а не уехать под неё.
@@ -369,10 +390,104 @@ struct MainWindow: View {
         .animation(nil, value: panelWidth)
     }
 
+    /// Панели сплита с подвижной границей между ними.
+    ///
+    /// Ширина хранится долей от окна, а не в точках: окно меняют размер, и
+    /// запомненные точки при сужении оставили бы правую панель шириной в пару
+    /// сантиметров, а при разворачивании на весь экран — левую.
+    @ViewBuilder
+    private func panes(renamingItem: Binding<URL?>, state: AppState) -> some View {
+        if let right = appState.panes.right {
+            GeometryReader { proxy in
+                let total = proxy.size.width
+                let leftWidth = max(minPaneWidth, min(total - minPaneWidth - dividerWidth, total * paneFraction))
+
+                HStack(spacing: 0) {
+                    PaneView(
+                        group: .left, tabs: appState.panes.left, actions: actions,
+                        appState: state, renamingItem: renamingItem,
+                        draggingTab: $draggingTab
+                    )
+                    .frame(width: leftWidth)
+                    .onboardingTarget(.addressBar)
+
+                    paneDivider(total: total)
+
+                    PaneView(
+                        group: .right, tabs: right, actions: actions,
+                        appState: state, renamingItem: renamingItem,
+                        draggingTab: $draggingTab
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+            }
+        } else {
+            PaneView(
+                group: .left, tabs: appState.panes.left, actions: actions,
+                appState: state, renamingItem: renamingItem,
+                draggingTab: $draggingTab
+            )
+            .onboardingTarget(.addressBar)
+        }
+    }
+
+    /// Граница панелей: тянется мышью, по двойному щелчку возвращается к
+    /// половине — подогнанную вручную границу иначе не вернуть точно.
+    private func paneDivider(total: CGFloat) -> some View {
+        Divider()
+            .frame(width: dividerWidth)
+            .background(Color(nsColor: .separatorColor).opacity(0.001))
+            .contentShape(Rectangle())
+            .onHover { inside in
+                // Курсор-стрелка сообщает о возможности тянуть раньше, чем
+                // человек попробует: без него граница выглядит нарисованной.
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(coordinateSpace: .named(resizeCoordinateSpace))
+                    .onChanged { value in
+                        guard total > 0 else { return }
+                        draggedFraction = min(0.8, max(0.2, value.location.x / total))
+                    }
+                    .onEnded { _ in
+                        // Запись в настройки один раз по отпусканию, а не на
+                        // каждый кадр: @AppStorage пишет в UserDefaults
+                        // синхронно, и полсотни записей в секунду дают рывки.
+                        if let dragged = draggedFraction {
+                            splitFraction = Double(dragged)
+                            draggedFraction = nil
+                        }
+                    }
+            )
+            .onTapGesture(count: 2) {
+                splitFraction = 0.5
+                draggedFraction = nil
+            }
+    }
+
     // MARK: - Кнопка серверов
 
     /// Кнопка «Серверы» для тулбара. Держит те же connection/connectModel, что и
     /// сайдбар, — состояние подключений у них общее.
+    /// Кнопка «Две панели» в тулбаре.
+    ///
+    /// Кнопкой, а не только пунктом меню: сплит включают редко, и сочетание
+    /// клавиш для него никто не помнит — а видимая кнопка ещё и сообщает, что
+    /// такая возможность вообще есть. Нажатой она остаётся, пока панель
+    /// открыта: иначе выключение приходилось бы искать в меню.
+    private var splitButton: some View {
+        Button {
+            appState.panes.toggleSplit()
+        } label: {
+            Image(systemName: "rectangle.split.2x1")
+                .symbolVariant(appState.panes.isSplit ? .fill : .none)
+        }
+        .help(appState.panes.isSplit ? "Убрать вторую панель" : "Показать две панели")
+        // Шорткат кнопке не назначается — он в реестре, у пункта меню:
+        // привязанный к кнопке, он гаснет вместе с её .disabled и не работает
+        // при фокусе в списке файлов.
+    }
+
     private var serverMenuButton: some View {
         ServerMenuButton(
             connection: connection,

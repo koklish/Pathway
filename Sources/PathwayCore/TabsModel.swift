@@ -273,6 +273,54 @@ public final class TabsModel {
         save()
     }
 
+    // MARK: - Перенос между группами
+
+    /// Отдаёт вкладку другой группе: убирает из списка, не трогая её модель.
+    ///
+    /// Отдельно от `close`: тот отменяет загрузку и снимает слежение, потому
+    /// что вкладка перестаёт существовать. Здесь она продолжает жить в другой
+    /// группе, и оборванное на полпути чтение сетевой папки пришлось бы
+    /// начинать заново.
+    func detach(id: UUID) {
+        guard tabs.count > 1, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        let wasActive = index == activeIndex
+        let leaving = tabs.remove(at: index)
+        // Слежение снимаем с уезжающей вкладки: в принимающей группе она может
+        // оказаться фоновой, а наблюдатель, оставленный включённым, дал бы
+        // второй поток FSEvents на ту же папку.
+        leaving.browser.stopWatching()
+
+        if wasActive {
+            activeIndex = min(index, tabs.count - 1)
+            let wasLoaded = active.hasLoaded
+            loadIfNeeded(active)
+            updateWatching()
+            if wasLoaded { active.browser.refreshAfterReturn() }
+        } else if index < activeIndex {
+            activeIndex -= 1
+        }
+        save()
+    }
+
+    /// Принимает вкладку из другой группы.
+    ///
+    /// Индекс приводится к границе групп так же, как при открытии: пришедшая
+    /// незакреплённой вкладка не должна встать между закреплёнными.
+    func adopt(_ tab: TabState, at index: Int? = nil) {
+        watch(tab)
+        let requested = index ?? tabs.count
+        let lower = tab.isPinned ? 0 : pinnedCount
+        let upper = tab.isPinned ? pinnedCount : tabs.count
+        let target = min(max(requested, lower), upper)
+        tabs.insert(tab, at: target)
+        // Активной остаётся прежняя вкладка: выбор новой — дело вызывающего,
+        // и молчаливый перевод фокуса здесь спорил бы с ним.
+        if target <= activeIndex, tabs.count > 1 {
+            activeIndex += 1
+        }
+        save()
+    }
+
     // MARK: - Закрытие
 
     public func closeActive() {

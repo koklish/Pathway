@@ -24,6 +24,12 @@ final class FileTableView: NSTableView {
     var canPaste: (() -> Bool)?
     /// Средний клик по строке — открыть папку фоновой вкладкой.
     var onMiddleClick: ((Int) -> Void)?
+    /// Любой клик по списку делает свою панель активной.
+    ///
+    /// Отдельным замыканием, а не жестом SwiftUI снаружи: клики внутри
+    /// NSTableView до жестов предков не доходят — таблица забирает события
+    /// себе, — и клик по списку файлов не переключал активную панель.
+    var onFocus: (() -> Void)?
     /// Файлы для быстрого просмотра — текущее выделение.
     ///
     /// Замыкание, а не сохранённый массив: список должен читаться в момент
@@ -67,10 +73,27 @@ final class FileTableView: NSTableView {
             super.otherMouseUp(with: event)
             return
         }
+        onFocus?()
         let point = convert(event.locationInWindow, from: nil)
         let clicked = row(at: point)
         guard clicked >= 0 else { return }
         onMiddleClick?(clicked)
+    }
+
+    /// Фокус — до super: выделение и двойной клик обязаны уйти уже в активную
+    /// панель, иначе первый клик по неактивной половине отработал бы на
+    /// соседнюю.
+    override func mouseDown(with event: NSEvent) {
+        onFocus?()
+        super.mouseDown(with: event)
+    }
+
+    /// Правый клик тоже фокусирует: контекстное меню строится по clickedRow
+    /// этой таблицы, и пришедшие из него команды обязаны попасть в ту же
+    /// панель, а не в активную соседнюю.
+    override func rightMouseDown(with event: NSEvent) {
+        onFocus?()
+        super.rightMouseDown(with: event)
     }
 
     @objc func copy(_ sender: Any?) { onCopy?() }
@@ -195,6 +218,9 @@ struct FileListView: NSViewRepresentable {
     @Binding var renamingItem: URL?
     /// Открывает диалог архивации для выбранных элементов.
     let onCompress: ([FileItem]) -> Void
+    /// Делает панель этого списка активной. Замыканием, а не чтением group из
+    /// модели: список не должен знать про устройство панелей.
+    let onFocusPane: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -230,6 +256,10 @@ struct FileListView: NSViewRepresentable {
         table.onPaste = { [model] in model.paste() }
         table.onSelectAll = { [model] in model.selectAll() }
         table.canPaste = { [model] in model.canPaste && !model.isReadOnlyVolume }
+        // Напрямую, без координатора: замыкание захватывает appState и группу
+        // панели, а обе константны на всю жизнь вью — переприсваивать в
+        // updateNSView нечего.
+        table.onFocus = onFocusPane
         // Через координатор, а не через захваченный appState: он обновляется в
         // updateNSView и всегда указывает на актуальную вкладку.
         table.onMiddleClick = { [coordinator = context.coordinator] row in

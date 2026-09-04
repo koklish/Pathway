@@ -46,6 +46,7 @@ public enum CommandID: String, CaseIterable, Sendable {
     case goBack, goForward, goUp, editPath, findInFolder, searchContents, toggleFavorite
     // Вкладки
     case newTab, closeTab, pinTab, nextTab, previousTab, openInNewTab
+    case toggleSplit, focusOtherPane, openInOtherPane
     // Git
     case gitClone, gitFetch, gitPull, gitPush, gitSync, gitCopyBranch, gitCommits
 }
@@ -423,6 +424,58 @@ public enum CommandRegistry {
             isEnabled: { !$0.isEditingText && $0.browser.commandFolder != $0.browser.pane.path },
             run: { $0.tabs.open($0.browser.commandFolder, activate: true) }
         ),
+        // MARK: Панели
+
+        AppCommand(
+            id: .toggleSplit,
+            // Заголовок для выключенного сплита; меню подставляет свой, когда
+            // панель уже открыта, — как у pinTab и toggleFavorite.
+            title: "Разделить окно",
+            // ⌘\ — как в Xcode и VS Code, где этим же сочетанием делят окно.
+            // ⌥⌘S не годится: система отдаёт его правке текста, и до меню он
+            // не доходит вовсе — пункт выглядит рабочим, а клавиши молчат.
+            shortcut: Shortcut(.character("\\"), .command),
+            icon: "rectangle.split.2x1",
+            isEnabled: { !$0.isEditingText },
+            run: { $0.panes.toggleSplit() }
+        ),
+        AppCommand(
+            id: .focusOtherPane,
+            title: "Перейти в другую панель",
+            // ⌃⌘] — рядом с ⌘\, которым панель открывают, и свободно. ⌥⇥ не
+            // годится: Option+Tab принадлежит системе, до меню он не доходит
+            // вовсе, и пункт выглядел бы рабочим при молчащих клавишах.
+            shortcut: Shortcut(.character("]"), [.command, .control]),
+            icon: "arrow.left.arrow.right",
+            // Гаснет без сплита: переходить некуда, и живой пункт меню обещал
+            // бы действие, которого не произойдёт.
+            isEnabled: { $0.panes.isSplit },
+            run: { $0.panes.focusOther() }
+        ),
+        AppCommand(
+            id: .openInOtherPane,
+            title: "Открыть в другой панели",
+            // Без шортката: пункт контекстного меню, работает от clickedRow —
+            // как openInNewTab.
+            shortcut: nil,
+            icon: "rectangle.split.2x1",
+            isEnabled: { !$0.isEditingText && $0.browser.commandFolder != $0.browser.pane.path },
+            run: { state in
+                // Без сплита команда его открывает: иначе «Открыть в другой
+                // панели» на одной панели была бы мертва, а именно так сплит
+                // и заводят чаще всего — из папки, которую хотят видеть рядом.
+                let folder = state.browser.commandFolder
+                if !state.panes.isSplit {
+                    state.panes.openSplit()
+                    state.panes.active.active.browser.pane.navigate(to: folder)
+                } else {
+                    let target = state.panes.activeGroup.other
+                    state.panes.focus(target)
+                    state.panes.active.open(folder, activate: true)
+                }
+            }
+        ),
+
         AppCommand(
             id: .gitClone,
             title: "Клонировать репозиторий…",
