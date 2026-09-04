@@ -114,6 +114,25 @@ public final class TabsModel {
         }
     }
 
+    /// Ширины колонок, настроенные вручную, — настройка приложения, как
+    /// сортировка и масштаб.
+    ///
+    /// Вкладкам не раздаётся, как и scale: ширина колонки — свойство того, как
+    /// список нарисован, а не того, что в нём лежит. Пишется через
+    /// setColumnWidth, а не присваиванием целиком: источник — перетаскивание
+    /// одной колонки, и замена всего словаря на каждое движение мыши потеряла
+    /// бы соседние записи, случись им обновиться параллельно.
+    public private(set) var columnWidths: ColumnWidths = .default
+
+    /// Запоминает ширину колонки, настроенную перетаскиванием.
+    public func setColumnWidth(_ width: CGFloat, for column: String) {
+        var updated = columnWidths
+        updated.set(width, for: column)
+        guard updated != columnWidths else { return }
+        columnWidths = updated
+        store.save(columnWidths: updated)
+    }
+
     private let store: TabsStore
     private let fallback: URL
     /// Наблюдатель у каждой вкладки свой. Фабрика, а не готовый экземпляр:
@@ -141,6 +160,7 @@ public final class TabsModel {
         // По той же причине, что и сортировка: didSet записал бы в хранилище
         // только что прочитанное оттуда.
         scale = store.restoreScale()
+        columnWidths = store.restoreColumnWidths()
 
         let restored = store.restore()
         let items = restored.items.isEmpty ? [TabRecord(path: path)] : restored.items

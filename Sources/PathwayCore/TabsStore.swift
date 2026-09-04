@@ -28,6 +28,7 @@ public final class TabsStore {
     private let sortKeyKey = "sort.key"
     private let sortAscendingKey = "sort.ascending"
     private let listScaleKey = "list.scale"
+    private let columnWidthsKey = "columns.widths"
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -71,6 +72,25 @@ public final class TabsStore {
     public func restoreScale() -> ListScale {
         guard let raw = defaults.object(forKey: listScaleKey) as? Int else { return .default }
         return ListScale(rawValue: raw) ?? .default
+    }
+
+    // MARK: - Ширины колонок
+
+    public func save(columnWidths: ColumnWidths) {
+        defaults.set(columnWidths.storage, forKey: columnWidthsKey)
+    }
+
+    /// Сохранённые ширины или умолчание.
+    ///
+    /// Приведение к [String: Double], а не к [String: Any] с разбором каждого
+    /// значения: plist мог записать билд с другим форматом, и словарь, где под
+    /// ключом лежит строка, обязан целиком свестись к умолчанию, а не отдать
+    /// половину колонок. Отдельные негодные числа отсеет уже сам ColumnWidths.
+    public func restoreColumnWidths() -> ColumnWidths {
+        guard let stored = defaults.dictionary(forKey: columnWidthsKey) as? [String: Double] else {
+            return .default
+        }
+        return ColumnWidths(storage: stored)
     }
 
     public func save(items: [TabRecord], activeIndex: Int) {

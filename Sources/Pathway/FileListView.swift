@@ -244,7 +244,10 @@ struct FileListView: NSViewRepresentable {
         for column in Column.allCases {
             let tableColumn = NSTableColumn(identifier: column.identifier)
             tableColumn.title = column.title
-            tableColumn.width = column.width
+            // Сохранённая ширина важнее стартовой: её выставил пользователь
+            // мышью, и обратное означало бы, что настройка живёт до
+            // перезапуска, — та самая жалоба, ради которой всё затевалось.
+            tableColumn.width = appState.columnWidths.width(for: column.rawValue) ?? column.width
             // Умолчание AppKit — 10 pt: колонку можно утащить до нечитаемой
             // полоски, где не помещается даже значок.
             tableColumn.minWidth = 50
@@ -269,6 +272,15 @@ struct FileListView: NSViewRepresentable {
         scrollView.documentView = table
         scrollView.hasVerticalScroller = true
         context.coordinator.table = table
+        // Наблюдатель ставится один раз, вместе с таблицей: makeNSView зовётся
+        // на вкладку однажды, а updateNSView — на каждый рендер, и подписка там
+        // копилась бы до сотен вызовов на одно перетаскивание.
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.columnDidResize(_:)),
+            name: NSTableView.columnDidResizeNotification,
+            object: table
+        )
         return scrollView
     }
 
@@ -570,14 +582,14 @@ struct FileListView: NSViewRepresentable {
             // ячейка строки, и шрифт таблицы их не касается.
             for column in table.tableColumns {
                 column.headerCell.font = .systemFont(ofSize: scale.headerFontSize)
-                // Ширину ведёт масштаб: рассчитанные под кегль 12 точки не
-                // вмещают дату на 16 pt, и «28 авг. 2026 г., 15:37» обрезалось
-                // бы на каждой строке.
-                //
-                // Ручную правку ширины это стирает, и так и задумано: она
-                // нигде не сохраняется и живёт лишь до перезапуска, а
-                // обрезанная дата — навсегда.
                 guard let kind = Column(rawValue: column.identifier.rawValue) else { continue }
+                // Настроенную вручную колонку масштаб не трогает: ползунок
+                // размера иначе стирал бы ширину, выставленную мышью, и
+                // настройка терялась бы от случайного движения — ровно то, на
+                // что жалуются. Ненастроенные по-прежнему ведёт масштаб:
+                // рассчитанные под кегль 12 точки не вмещают дату на 16 pt, и
+                // «28 авг. 2026 г., 15:37» обрезалось бы на каждой строке.
+                if appState.columnWidths.isCustomized(kind.rawValue) { continue }
                 let extra = kind == .name ? scale.nameColumnExtraWidth : 0
                 column.width = kind.width * scale.columnWidthFactor + extra
             }
@@ -754,6 +766,22 @@ struct FileListView: NSViewRepresentable {
             // модель осталась бы у одной вкладки и умерла бы с приложением.
             appState.sort = SortSettings(key: key, ascending: descriptor.ascending)
             tableView.reloadData()
+        }
+
+        // MARK: - Ширина колонок
+
+        /// Запоминает ширину, выставленную перетаскиванием.
+        ///
+        /// Нотификацией, а не методом делегата: у NSTableViewDelegate такого
+        /// метода нет вовсе — об изменении ширины таблица сообщает только через
+        /// columnDidResizeNotification.
+        ///
+        /// Через appState, по тем же причинам, что и сортировка: ширина общая
+        /// для всех вкладок и переживает перезапуск, а записанная в свою модель
+        /// осталась бы у одной вкладки и умерла бы с приложением.
+        @objc func columnDidResize(_ notification: Notification) {
+            guard let column = notification.userInfo?["NSTableColumn"] as? NSTableColumn else { return }
+            appState.setColumnWidth(column.width, for: column.identifier.rawValue)
         }
 
         // MARK: - Переименование

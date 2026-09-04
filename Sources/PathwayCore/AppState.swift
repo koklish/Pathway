@@ -80,6 +80,15 @@ public final class AppState {
         set { tabs.scale = newValue }
     }
 
+    /// Ширины колонок — там же и по тем же причинам. Только чтение: пишутся
+    /// они через setColumnWidth, который отбрасывает негодные значения, и
+    /// присваивание словаря целиком прошло бы мимо этой проверки.
+    public var columnWidths: ColumnWidths { tabs.columnWidths }
+
+    public func setColumnWidth(_ width: CGFloat, for column: String) {
+        tabs.setColumnWidth(width, for: column)
+    }
+
     /// Доступны ли операции над репозиторием: цель найдена и он не занят.
     ///
     /// Цель — текущий репозиторий либо выделенная папка-репозиторий. Только

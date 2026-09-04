@@ -36,6 +36,11 @@ public enum ArchiveError: Error, Equatable {
     case wrongPassword
     /// Зашифрованные 7z/RAR системный bsdtar не распаковывает.
     case encryptedUnsupported
+    /// Непрерывный (solid) RAR: файлы сжаты общим потоком, и libarchive такой
+    /// режим не реализует вовсе — ни для RAR4, ни для RAR5. Шифрование тут ни
+    /// при чём, и сводить это к encryptedUnsupported значило бы советовать
+    /// пароль там, где он не поможет.
+    case solidUnsupported
     case toolFailed(String)
 }
 
@@ -324,10 +329,20 @@ public struct ArchiveService: Sendable {
         }
     }
 
-    private static func mapError(stderr: String) -> ArchiveError {
+    /// Сопоставляет вывод bsdtar с ошибкой приложения.
+    ///
+    /// internal, а не private: разбор проверяется тестами напрямую — гонять
+    /// bsdtar ради нескольких строк дороже, а результат зависел бы от версии
+    /// libarchive на машине, где идёт прогон.
+    static func mapError(stderr: String) -> ArchiveError {
         let text = stderr.lowercased()
         if text.contains("incorrect passphrase") { return .wrongPassword }
         if text.contains("passphrase required") { return .passwordRequired }
+        // Раньше это попадало в toolFailed и показывалось английской строкой от
+        // bsdtar. Проверка идёт до encrypted: solid-архив бывает и
+        // зашифрованным, а назвать причиной шифрование значило бы послать
+        // человека искать пароль, которого он не спрашивал.
+        if text.contains("solid") && text.contains("unavailable") { return .solidUnsupported }
         if text.contains("encrypted") && text.contains("unsupported") { return .encryptedUnsupported }
         return .toolFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
     }

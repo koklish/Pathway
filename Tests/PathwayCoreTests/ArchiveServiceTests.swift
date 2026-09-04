@@ -281,6 +281,46 @@ struct ArchiveServiceTests {
     }
 }
 
+@Suite("Разбор ошибок распаковки")
+struct ArchiveErrorMappingTests {
+    /// Настоящий вывод bsdtar 3.5.3 на непрерывном RAR4. Строка взята с живого
+    /// архива, а не придумана: разбор держится на её тексте.
+    private let solidStderr = """
+        bsdtar: RAR solid archive support unavailable.
+        bsdtar: Error exit delayed from previous errors.
+        """
+
+    @Test("непрерывный RAR распознаётся, а не уходит в toolFailed английской строкой")
+    func recognizesSolidArchive() {
+        #expect(ArchiveService.mapError(stderr: solidStderr) == .solidUnsupported)
+    }
+
+    @Test("непрерывный архив не выдаётся за зашифрованный: пароль тут не поможет")
+    func solidIsNotReportedAsEncrypted() {
+        // Solid-архив бывает и зашифрованным, и порядок проверок это решает:
+        // назови мы причиной шифрование — человек искал бы пароль, которого у
+        // него не спрашивали.
+        let both = "bsdtar: RAR solid archive support unavailable. encrypted entry unsupported"
+        #expect(ArchiveService.mapError(stderr: both) == .solidUnsupported)
+    }
+
+    @Test("неверный пароль остаётся неверным паролем")
+    func wrongPasswordUnchanged() {
+        #expect(ArchiveService.mapError(stderr: "bsdtar: Incorrect passphrase") == .wrongPassword)
+    }
+
+    @Test("зашифрованный 7z по-прежнему опознаётся отдельно от непрерывного")
+    func encryptedStillRecognized() {
+        let stderr = "bsdtar: Encrypted file is unsupported"
+        #expect(ArchiveService.mapError(stderr: stderr) == .encryptedUnsupported)
+    }
+
+    @Test("незнакомая ошибка доносится текстом, а не глотается")
+    func unknownErrorKeepsText() {
+        #expect(ArchiveService.mapError(stderr: " Truncated input file \n") == .toolFailed("Truncated input file"))
+    }
+}
+
 /// Потокобезопасный сборщик значений прогресса.
 private final class ProgressBox: @unchecked Sendable {
     private let lock = NSLock()
