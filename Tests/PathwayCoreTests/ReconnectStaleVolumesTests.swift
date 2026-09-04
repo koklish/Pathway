@@ -20,10 +20,13 @@ struct ReconnectStaleVolumesTests {
         let defaults = UserDefaults(suiteName: "tests.reconnect.\(UUID().uuidString)")!
         let mounter = RecordingMounter(behaviour)
         let credentials = InMemoryCredentialStore()
-        let mounted = MountedServers()
+        // Сканер подменён: refresh внутри переподключения иначе прочитал бы
+        // настоящую таблицу монтирования машины и стёр бы подставленный том.
+        let volume = MountedServers.NetworkVolume(server: server, mountPoint: mountPoint)
+        let mounted = MountedServers(scan: { [volume] })
         // Через adopt, а не remember: переподключение обходит тома, видимые
         // системе, — remember положил бы точку мимо этого списка.
-        mounted.adopt([MountedServers.NetworkVolume(server: server, mountPoint: mountPoint)])
+        mounted.adopt([volume])
 
         let connection = ServerConnection(
             bookmarks: ServerBookmarks(defaults: defaults),
@@ -115,6 +118,69 @@ struct ReconnectStaleVolumesTests {
         #expect(mounter.callCount == 1)
     }
 
+    // MARK: - Переподключение по требованию
+
+    @Test("залипший том переподключается перед открытием, а не отдаётся зависшим")
+    func staleVolumeReconnectsOnDemand() async {
+        let (connection, mounter, _) = makeConnection(responding: false)
+
+        let point = await connection.reconnectIfStale(server)
+
+        #expect(mounter.forceUnmounted == [mountPoint])
+        #expect(mounter.callCount == 1)
+        #expect(point == mountPoint)
+    }
+
+    @Test("живой том открывается сразу, без лишнего перемонтирования")
+    func healthyVolumeOpensImmediately() async {
+        let (connection, mounter, _) = makeConnection(responding: true)
+
+        let point = await connection.reconnectIfStale(server)
+
+        #expect(mounter.callCount == 0, "живой том перемонтировать незачем")
+        #expect(mounter.forceUnmounted.isEmpty)
+        #expect(point == mountPoint)
+    }
+
+    @Test("недоступный сервер возвращает nil, а не точку залипшего тома")
+    func unreachableServerReturnsNil() async {
+        let (connection, _, _) = makeConnection(
+            responding: false, behaviour: .failure(Int32(EHOSTUNREACH))
+        )
+
+        let point = await connection.reconnectIfStale(server)
+
+        // nil, а не прежняя точка: вкладка, открытая на снятом томе, показала бы
+        // пустоту вместо внятного отказа.
+        #expect(point == nil)
+        #expect(connection.mounted.isMounted(server) == false)
+    }
+
+    @Test("неучтённый сервер не выдумывает точку монтирования")
+    func unknownServerReturnsNil() async {
+        let defaults = UserDefaults(suiteName: "tests.reconnect.\(UUID().uuidString)")!
+        let connection = ServerConnection(
+            bookmarks: ServerBookmarks(defaults: defaults),
+            credentials: InMemoryCredentialStore(),
+            mounter: RecordingMounter(.mounted(mountPoint)),
+            mounted: MountedServers(scan: { [] }),
+            probe: { _ in false }
+        )
+
+        #expect(await connection.reconnectIfStale(server) == nil)
+    }
+
+    @Test("переподключение по требованию берёт сохранённый пароль")
+    func onDemandReconnectUsesSavedCredentials() async throws {
+        let (connection, mounter, credentials) = makeConnection(responding: false)
+        try credentials.save(user: "alex", password: "секрет", for: server)
+
+        _ = await connection.reconnectIfStale(server)
+
+        #expect(mounter.lastUser == "alex")
+        #expect(mounter.lastPassword == "секрет")
+    }
+
     @Test("без учтённых томов не делает ничего")
     func noVolumesMeansNoWork() async {
         let defaults = UserDefaults(suiteName: "tests.reconnect.\(UUID().uuidString)")!
@@ -123,7 +189,7 @@ struct ReconnectStaleVolumesTests {
             bookmarks: ServerBookmarks(defaults: defaults),
             credentials: InMemoryCredentialStore(),
             mounter: mounter,
-            mounted: MountedServers(),
+            mounted: MountedServers(scan: { [] }),
             probe: { _ in false }
         )
 

@@ -21,7 +21,21 @@ public final class MountedServers {
     /// Тома, найденные в системе, включая смонтированные мимо приложения.
     public private(set) var networkVolumes: [NetworkVolume] = []
 
-    public init() {}
+    /// Чем читается таблица монтирования системы.
+    ///
+    /// Замыкание, а не прямой вызов scanNetworkMounts: refresh иначе лез бы в
+    /// getmntinfo и в тестах затирал бы подставленные тома тем, что случайно
+    /// смонтировано на машине в момент прогона. Та же причина, по которой в
+    /// проекте протоколами закрыты все остальные границы с ОС.
+    private let scan: @MainActor () -> [NetworkVolume]
+
+    /// Умолчание задано через nil, а не ссылкой на scanNetworkMounts: значение
+    /// по умолчанию у публичного инициализатора обязано быть публичным, а
+    /// открывать наружу чтение таблицы монтирования незачем — им пользуется
+    /// только сам класс.
+    public init(scan: (@MainActor () -> [NetworkVolume])? = nil) {
+        self.scan = scan ?? { MountedServers.scanNetworkMounts() }
+    }
 
     public func remember(_ server: ServerAddress, at mountPoint: URL) {
         points[Self.key(server)] = mountPoint
@@ -113,7 +127,7 @@ public final class MountedServers {
     /// исчезал бы из сайдбара совсем: в «Местах» его нет по определению, а в «Сети»
     /// он бы не появился, потому что закладки на него никто не создавал.
     public func adoptExistingMounts() {
-        adopt(Self.scanNetworkMounts())
+        adopt(scan())
     }
 
     /// Отделено от чтения системы: так дедупликацию можно проверить на данных,
@@ -136,7 +150,7 @@ public final class MountedServers {
     }
 
     /// Читает таблицу монтирования и оставляет сетевые файловые системы.
-    private static func scanNetworkMounts() -> [NetworkVolume] {
+    static func scanNetworkMounts() -> [NetworkVolume] {
         var buffer: UnsafeMutablePointer<statfs>?
         let count = getmntinfo(&buffer, MNT_NOWAIT)
         guard count > 0, let buffer else { return [] }

@@ -359,9 +359,23 @@ private struct ServerRow: View {
 
     /// Сервер открывается новой вкладкой, а не вместо текущей: папка, из
     /// которой пошли к серверу, должна остаться под рукой.
+    ///
+    /// Перед открытием том проверяется на живость: после сна он выглядит
+    /// подключённым, но обращение к нему виснет до системного таймаута, и
+    /// вкладка открывалась бы в мёртвую папку. Раньше это лечилось вручную —
+    /// «переподключить» в контекстном меню, — а теперь делается само.
     private func openMountPoint() {
-        guard let point = connection.mounted.mountPoint(for: server) else { return }
-        appState.tabs.open(point, activate: true)
+        Task {
+            // Пока идёт проба и возможное перемонтирование, строка показывает
+            // индикатор: connecting для этого уже есть, своего состояния не надо.
+            guard let point = await connection.reconnectIfStale(server) else {
+                // Сервер не вернулся: молча открывать нечего, а вкладка на
+                // снятом томе показала бы пустоту вместо внятного отказа.
+                onError("Не удалось переподключиться к серверу «\(server.displayName)».")
+                return
+            }
+            appState.tabs.open(point, activate: true)
+        }
     }
 
     private func connect() {
